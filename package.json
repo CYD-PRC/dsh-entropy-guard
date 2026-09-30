@@ -1,0 +1,62 @@
+{
+  "name": "@cyd-prc/dsh-entropy-guard",
+  "version": "0.2.0",
+  "private": false,
+  "description": "Gear-based autonomy governor for the DeepSeek Harness agent: the entropy-sdk EntropyRuntime core (gear ladder G0-G4, utility gate, slow-up/fast-down policy, tamper-evident audit chain) bound to the Harness tool registry, with a live Web UI and paper-ready metrics export.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Wang Miaosheng (https://orcid.org/0009-0003-2767-2421)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CYD-PRC/dsh-entropy-guard.git"
+  },
+  "homepage": "https://github.com/CYD-PRC/dsh-entropy-guard#readme",
+  "bugs": {
+    "url": "https://github.com/CYD-PRC/dsh-entropy-guard/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "tools",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "Entropy Guard",
+    "description": "Gear-based autonomy governor: every tool call passes a utility gate under a five-level gear ladder, autonomy is earned by clean cycles and revoked on instability, and every decision lands in a tamper-evident audit chain you can export as paper-ready metrics."
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "entropy-sdk",
+    "entropy-runtime",
+    "safety",
+    "guard",
+    "autonomy",
+    "gear-ladder",
+    "audit-chain"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

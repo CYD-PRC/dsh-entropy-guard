@@ -1,0 +1,47 @@
+# Entropy Guard bundle patch.
+#
+# The row's `config` is the deployment's policy and survives DSH upgrades; every
+# field below is optional and falls back to the documented default. The full
+# shape is described in the bundle's README.md.
+- insert:
+    - id: cyd-prc-entropy-guard
+      name: '@cyd-prc/dsh-entropy-guard'
+      config:
+        enabled: true
+        # Start at G3 Execute so a normal session keeps its autonomy; the ladder
+        # de-escalates immediately on rejection or tool error and re-escalates
+        # one level per `policy.patience` clean cycles below `policy.sigmaLow`.
+        initialGear: 3
+        theta: 1
+        # `observe-only` keeps G0 read-only tools available while suspended (the
+        # paper's Theorem 4 recovery path); `deny-all` reproduces the SDK's
+        # `suspended_skip` exactly.
+        suspendedBehavior: observe-only
+        # weights: { task: 1, safety: 2, cost: 0.5 }
+        # enforcement: gate | observe
+        #          `observe` denies nothing: every call is still classified,
+        #          gated and audited. Install in observe, read `/entropy export`,
+        #          then switch to `gate`.
+        # policy:  { sigmaLow: 0.3, sigmaHigh: 1.0, patience: 3, sigmaDecay: 0.1, sigmaStep: 0.1,
+        #            fastDown: error }
+        #          `fastDown: overflow` makes one tool error cost sigma instead of
+        #          a whole gear; `error` is the SDK's law. The mode is written
+        #          field-level into every export, because two runs sampled under
+        #          different semantics are not comparable.
+        # fallback: { maxAlternatives: 0, maxConsecutiveRejections: 8, countGearDenials: false }
+        #          `countGearDenials: false` aims the suspension endpoint at
+        #          refused actions, not at the ladder's own refusals.
+        # denials: actionable | terse
+        #          `actionable` (default) names the permitted tools and the
+        #          earn-back arithmetic; `terse` withholds them. Observability
+        #          versus policy secrecy — the deployer's call.
+        # audit:   { dir: null, includeArguments: false }   # null = $DSH_HOME/entropy-guard
+        # tools:   { <toolName>: { gear: 0-4, risk: 0-1, cost: number, gain: number } }
+        # rules:   [ { label, match: <regex>, dangerousTarget: <regex>, flags, risk, cost, gear } ]
+        #          `dangerousTarget` scopes a rule: it fires only when the
+        #          operation AND the target both match, so a scoped relative
+        #          delete stays ordinary work while an absolute one is vetoed.
+        # contentKeys: [ content, old_string, new_string ]
+        #          Argument keys treated as file content rather than operation;
+        #          pattern rules never scan them.
+        # ui:      { dock: true, settings: true }   # live badge + settings page

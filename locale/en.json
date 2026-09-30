@@ -1,0 +1,8 @@
+{
+  "meta": {
+    "title": "Entropy Guard",
+    "description": "Gear-based autonomy governor: every tool call passes a utility gate under a five-level gear ladder, autonomy is earned by clean cycles and revoked on error, and every decision lands in an append-only audit chain."
+  },
+  "title": "Entropy Guard",
+  "description": "Gear-based autonomy governor built on entropy-sdk: gear ladder G0-G4, utility gate, sigma/error state machine, append-only audit chain."
+}
