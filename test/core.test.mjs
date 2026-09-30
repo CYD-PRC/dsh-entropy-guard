@@ -372,10 +372,65 @@ describe('harness policy', () => {
     assert.equal(unknown.gear, Gear.EXECUTE, 'unknown tools attest to the side-effecting gear');
 
     assert.deepEqual(classify('pwsh', { command: 'rm -rf /' }, config).labels, ['recursive-force-delete']);
-    assert.deepEqual(classify('pwsh', { command: 'rm -r -f /tmp/x' }, config).labels, ['recursive-force-delete']);
     assert.deepEqual(classify('pwsh', { command: 'git push --force origin main' }, config).labels, ['destructive-git']);
     assert.deepEqual(classify('read', { path: '/home/u/.ssh/id_rsa' }, config).labels, ['credential-store-access']);
     assert.deepEqual(classify('read', { path: '/workspace/notes.md' }, config).labels, []);
+    // 0.2.2: the POSIX shell tool is in the table with the same baseline as pwsh.
+    assert.deepEqual([classify('bash', {}, config).gear, classify('bash', {}, config).known], [Gear.EXECUTE, true]);
+    // 0.2.2 (defect 11): the credential *directories* are the target, so writing
+    // a backdoor key is caught as well as reading a private one.
+    assert.deepEqual(
+      classify('write', { file_path: '/root/.ssh/authorized_keys', content: 'ssh-rsa AAAA' }, config).labels,
+      ['credential-store-access'],
+    );
+    assert.deepEqual(
+      classify('write', { file_path: '/root/.aws/credentials', content: 'x' }, config).labels,
+      ['credential-store-access'],
+    );
+  });
+
+  it('draws the same catastrophic-root line on both platforms (defect 9)', () => {
+    const config = resolveConfig({});
+    const unix = (command) => classify('bash', { command }, config).labels;
+    const win = (command) => classify('pwsh', { command }, config).labels;
+    const rec = `-${'Recurse'}`;
+    const frc = `-${'Force'}`;
+
+    // Catastrophic roots: vetoed on both sides.
+    for (const command of [
+      'rm -rf /',
+      'rm -rf /etc',
+      'rm -rf /etc/passwd',
+      'rm -rf /usr/lib',
+      'rm -rf ~',
+      'rm -rf $HOME',
+      'rm -rf *',
+      'rm -rf ..',
+    ]) {
+      assert.deepEqual(unix(command), ['recursive-force-delete'], `unix root: ${command}`);
+    }
+    for (const command of [
+      `Remove-Item 'C:\\' ${rec} ${frc}`,
+      `Remove-Item 'C:\\Windows' ${rec} ${frc}`,
+      `Remove-Item 'C:\\Users\\someone\\project' ${rec} ${frc}`,
+      `Remove-Item "$env:USERPROFILE\\x" ${rec} ${frc}`,
+      `Remove-Item '%ProgramData%\\x' ${rec} ${frc}`,
+    ]) {
+      assert.deepEqual(win(command), ['windows-recursive-force-delete'], `win root: ${command}`);
+    }
+
+    // Scoped subtrees: ordinary work on both sides. `/tmp/build` and
+    // `$env:TEMP\x` are the same operation and neither may cost a gear.
+    for (const command of ['rm -rf /tmp/build', 'rm -rf ./build', 'rm -rf build', 'rm -rf node_modules']) {
+      assert.deepEqual(unix(command), [], `unix scoped: ${command}`);
+    }
+    for (const command of [
+      `Remove-Item "$env:TEMP\\entropy-probe-marker" ${rec} ${frc}`,
+      `Remove-Item 'C:\\tmp\\build' ${rec} ${frc}`,
+      `Remove-Item .\\build ${rec} ${frc}`,
+    ]) {
+      assert.deepEqual(win(command), [], `win scoped: ${command}`);
+    }
   });
 
   it('lets a deployment extend the tool table and drop defaults', () => {
@@ -428,6 +483,47 @@ describe('harness policy', () => {
     );
     assert.deepEqual(classify('pwsh', { command: 'PROBEOP' }, config).labels, ['probe-op']);
     assert.deepEqual(classify('read', { file_path: 'PROBEOP' }, config).labels, ['probe-op']);
+  });
+
+  it('records the object of a decision, not only its verdict (defect 10)', () => {
+    const audit = new AuditLog();
+    const runtime = new EntropyRuntime({
+      utility: alwaysAdmit,
+      theta: 1,
+      initialGear: Gear.EXECUTE,
+      auditLog: audit,
+    });
+    runtime.admit({}, { name: 'pwsh', requiredGear: Gear.EXECUTE, argsDigest: 'a'.repeat(64), toolSource: 'table' });
+    const entry = audit.entries.filter((e) => e.kind === 'gate_decision').at(-1);
+    assert.equal(entry.args_digest, 'a'.repeat(64), 'the decision names the object it decided');
+    assert.equal(entry.tool_source, 'table');
+    assert.equal(entry.args, undefined, 'the payload is stored only when the deployment asks for it');
+
+    // The same call digests the same way regardless of key order, and a different
+    // payload does not: that is what makes the digest usable as a commitment.
+    const controller = new EntropyController({ agentId: 'digest', config: resolveConfig({}), auditPath: null });
+    const first = controller.actionFor('pwsh', { command: 'echo a', extra: 1 });
+    const reordered = controller.actionFor('pwsh', { extra: 1, command: 'echo a' });
+    const other = controller.actionFor('pwsh', { command: 'echo b', extra: 1 });
+    assert.equal(first.argsDigest, reordered.argsDigest);
+    assert.notEqual(first.argsDigest, other.argsDigest);
+    assert.equal(first.args, undefined, 'off by default');
+    assert.equal(first.toolSource, 'table');
+    assert.equal(controller.actionFor('some_new_tool', {}).toolSource, 'default');
+
+    // Opting in stores a bounded copy beside the digest rather than instead of it.
+    const storing = new EntropyController({
+      agentId: 'digest-store',
+      config: resolveConfig({ audit: { includeArguments: true } }),
+      auditPath: null,
+    });
+    const stored = storing.actionFor('pwsh', { command: 'echo a' });
+    assert.deepEqual(stored.args, { command: 'echo a' });
+    assert.equal(
+      stored.argsDigest,
+      controller.actionFor('pwsh', { command: 'echo a' }).argsDigest,
+      'the digest does not depend on the storage mode',
+    );
   });
 
   it('rejects an invalid dangerousTarget pattern at activation', () => {

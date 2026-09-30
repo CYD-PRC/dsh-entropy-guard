@@ -1,6 +1,6 @@
 {
   "name": "@cyd-prc/dsh-entropy-guard",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": false,
   "description": "Gear-based autonomy governor for the DeepSeek Harness agent: the entropy-sdk EntropyRuntime core (gear ladder G0-G4, utility gate, slow-up/fast-down policy, tamper-evident audit chain) bound to the Harness tool registry, with a live Web UI and paper-ready metrics export.",
   "type": "module",

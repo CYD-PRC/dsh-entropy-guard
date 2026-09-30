@@ -222,7 +222,14 @@ Observed on a `danger-full-access` desktop profile with this bundle installed:
 
 - **Statement-scoped the pattern rules (defect 8).** The Windows recursive-delete rule used two lookaheads that scanned a *whole command*, so a script that listed a directory with one flag and removed a single file with the other was graded as one recursive forced delete — it denied this bundle's own release command while 0.2.0 was being published. Rules now match statement by statement (`;`, `&&`, `||`, escaped newline), and pipelines stay intact because `|` chains a single operation. 66 tests (the count printed in this file said 51 in 0.2.0).
 
-## Defect ledger (v0.1 → v0.2.1)
+## 0.2.2
+
+- **The same catastrophic-root line on both platforms (defect 9).** The Unix target pattern read "any token that begins with a path separator", so *every* absolute path was vetoed — `/tmp/build` cost a gear and a rejection — while the Windows side vetoed only drive-absolute paths, so `C:\tmp\build` passed. The same operation therefore got opposite verdicts depending on the platform, and nothing documented it. Both lists now name roots (`/`, `/etc`, `/home`, `C:\`, `C:\Windows`, `C:\Users`, the profile roots, a bare wildcard); scoped subtrees (`/tmp/...`, `$env:TEMP\...`, `C:\tmp\...`, `./build`) are ordinary work on both. `bash` also joins the tool table at `pwsh`'s baseline, so a Linux deployment no longer inherits a lower classification for the same power.
+- **The chain names the object of a decision (defect 10).** Every `gate_decision` entry now carries `args_digest` — SHA-256 over the canonical arguments, so key order does not move it — plus `tool_source` (`table` or `default`). `audit.includeArguments: true` now actually stores a bounded copy of the arguments; before this release the switch was documented in this file and in `cordis.patch.yml` but **never read by any code**, so a deployment that set it got silence. The rationale is the ledger's own: a pattern table cannot decide an opaque payload (`python3 -c exec(base64…)` is invisible to it), so the record has to be the thing that can name it.
+- **Credential directories, not one filename (defect 11).** The rule named `.ssh/id_*`, so *reading* a private key was vetoed while *installing* `authorized_keys` — the higher-impact action, since it grants persistent access instead of merely exposing a key — was not. The credential directories are the target now, whichever file inside them is touched.
+- `status` and `/entropy status` report `defaultedTools`, the number of decisions that fell back to `defaultTool`, so a host tool rename shows up as a number rather than as a silent drift from an explicit entry to the generic baseline.
+
+## Defect ledger (v0.1 → v0.2.2)
 
 Every entry here was found by running this plugin on a live profile; each names the fix that closed it. The pattern is the point: the defects cluster where a Python-shaped control law meets a tool registry, and three of them were the guard mis-grading *its own maintenance*.
 
@@ -235,6 +242,10 @@ Every entry here was found by running this plugin on a live profile; each names 
 | 5 | An audit field named `kind` overwrote the event kind | The chain lost the entry type of every `would_deny` and `call_rejected` record — Python raises on that collision, JavaScript silently clobbered it | the event kind is spread last, so a caller field can never rewrite an entry's type |
 | 6 | A replaced package does not hot-reload | Code already fixed on disk kept enforcing its old logic until a restart — including defects 1 and 2 | documented as standing limitation 1; re-running `install_bundle` returns `ambiguous-install` and does not reload |
 | 7 | The guard governed tool calls but not the tools managing the guard | A session at G3 could uninstall the layer with the very autonomy the layer granted | `plugin_manager` is classified at G4 Integrate |
+| 8 | A rule matched across a whole command instead of per statement | A script that listed a directory with one flag and removed a single file with the other was graded as one recursive forced delete — it denied this bundle's own release command | rules match statement by statement (`;`, `&&`, `\|\|`, escaped newline), and pipelines stay intact because `\|` chains one operation |
+| 9 | The destructive-target line was drawn differently per platform | `rm -rf /tmp/build` was vetoed on Unix while `C:\tmp\build` passed on Windows — the same operation, opposite verdicts — and the difference was written down nowhere | both lists name catastrophic roots; scoped subtrees are ordinary work on both; `bash` joins the table at `pwsh`'s baseline |
+| 10 | `audit.includeArguments` was documented but never read, and decision entries named no object | A deployment that switched payload recording on got silence; an encoded `exec` call left "shell admitted, U=…" and nothing else — neither the payload nor the target | `args_digest` on every decision, `tool_source` beside it, and the switch now stores a bounded copy |
+| 11 | The credential rule named `.ssh/id_*` | Reading a private key was vetoed while writing `authorized_keys` — persistent access — was not | the credential directories are the target, whichever file inside them is touched |
 
 ## Threat model boundaries (inherited from upstream)
 
@@ -251,13 +262,12 @@ Every entry here was found by running this plugin on a live profile; each names 
 5. A deleted audit file reads as empty (fail-open read path) while a failed
    append is fail-closed and denies the call; a missing chain file is itself an
    event a deployer should alert on.
-6. `includeArguments` is off by default so the chain records *what was decided*,
-   not the payload that was passed.
+6. `includeArguments` is **off** by default: every decision still records a SHA-256 digest of the canonical arguments (`args_digest`), so the chain can name the object of a decision and prove which call it decided — but the payload itself is stored only when the deployment opts in (`audit.includeArguments: true`, bounded to 2 000 characters per string).
 
 ## Tests
 
 ```
-node --test test/core.test.mjs        # 66 tests, no dependencies
+node --test test/core.test.mjs        # 68 tests, no dependencies
 ```
 
 Covers the ported contract (fail-closed attestation and gate validation, the
