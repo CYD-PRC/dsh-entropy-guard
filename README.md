@@ -229,7 +229,11 @@ Observed on a `danger-full-access` desktop profile with this bundle installed:
 - **Credential directories, not one filename (defect 11).** The rule named `.ssh/id_*`, so *reading* a private key was vetoed while *installing* `authorized_keys` — the higher-impact action, since it grants persistent access instead of merely exposing a key — was not. The credential directories are the target now, whichever file inside them is touched.
 - `status` and `/entropy status` report `defaultedTools`, the number of decisions that fell back to `defaultTool`, so a host tool rename shows up as a number rather than as a silent drift from an explicit entry to the generic baseline.
 
-## Defect ledger (v0.1 → v0.2.2)
+## 0.2.3
+
+- **The published package now carries its own bundle patch (defect 12).** `package.json` declared `dsh.bundle.patch: "./cordis.patch.yml"` while `files` did not list that file, so the npm tarball shipped 13 files without the patch row its own metadata points at: a **registry** install (a bundle spec rather than a local path) resolved to a package with no row to apply, and only a local-path install worked. Found by comparing the published 0.2.2 tarball against its commit, file by file. The fix is one line in `files`; the verification for this release asserts that every path `package.json` references — `icon`, `exports`, `dsh.bundle.patch` — exists inside the tarball.
+
+## Defect ledger (v0.1 → v0.2.3)
 
 Every entry here was found by running this plugin on a live profile; each names the fix that closed it. The pattern is the point: the defects cluster where a Python-shaped control law meets a tool registry, and three of them were the guard mis-grading *its own maintenance*.
 
@@ -246,6 +250,7 @@ Every entry here was found by running this plugin on a live profile; each names 
 | 9 | The destructive-target line was drawn differently per platform | `rm -rf /tmp/build` was vetoed on Unix while `C:\tmp\build` passed on Windows — the same operation, opposite verdicts — and the difference was written down nowhere | both lists name catastrophic roots; scoped subtrees are ordinary work on both; `bash` joins the table at `pwsh`'s baseline |
 | 10 | `audit.includeArguments` was documented but never read, and decision entries named no object | A deployment that switched payload recording on got silence; an encoded `exec` call left "shell admitted, U=…" and nothing else — neither the payload nor the target | `args_digest` on every decision, `tool_source` beside it, and the switch now stores a bounded copy |
 | 11 | The credential rule named `.ssh/id_*` | Reading a private key was vetoed while writing `authorized_keys` — persistent access — was not | the credential directories are the target, whichever file inside them is touched |
+| 12 | The package metadata pointed at a file the tarball did not carry | `dsh.bundle.patch` named the bundle patch while `files` omitted it, so a registry install resolved to a package with no row to apply — the community path was broken while the local path worked | the patch ships in `files`, and the release check asserts that every path the metadata references exists inside the tarball |
 
 ## Threat model boundaries (inherited from upstream)
 

@@ -346,7 +346,16 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
 - `status` 与 `/entropy status` 新增 `defaultedTools`：统计落到 `defaultTool` 的判定数，
   于是宿主改工具名会变成一个**数字**，而不是从显式条目静默漂移到通用基线。
 
-## 十三、缺陷账（v0.1 → v0.2.2）
+## 0.2.3
+
+- **发布的包现在带上它自己的补丁行（缺陷 12）。** `package.json` 声明了
+  `dsh.bundle.patch: "./cordis.patch.yml"`，而 `files` 没有列这个文件——于是 npm 包只装了 13 个文件，
+  **元数据指向的补丁行不在里面**：走**注册表**安装（用包规格而不是本地路径）会解析到一个没有行可应用
+  的包，只有本地路径安装能用。这是把已发布的 0.2.2 实件与其提交逐文件比对时发现的。
+  修复是 `files` 里加一行；本次发布的校验会断言 `package.json` 引用的每个路径
+  （`icon`、`exports`、`dsh.bundle.patch`）都存在于 tarball 内。
+
+## 十三、缺陷账（v0.1 → v0.2.3）
 
 以下每一条都是在真实 profile 上跑出来的，并注明关闭它的修复。规律本身就是结论：
 缺陷集中在"Python 形状的控制律撞上工具注册表"的地方，其中三条是守卫**误判了自己的维护动作**。
@@ -364,6 +373,7 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
 | 9 | 销毁性目标线在两个平台上画得不同 | Unix 否决 `rm -rf /tmp/build`，Windows 放行 `C:\tmp\build`——同一操作、相反判定，而这个差别哪儿都没写 | 两边都只列灾难性根；限定子树在两边都是普通工作；`bash` 以 `pwsh` 的基线入表 |
 | 10 | `audit.includeArguments` 有文档却从未被读取，且决策条目不记录对象 | 打开载荷记录的部署得到的是沉默；一次编码 `exec` 调用在链里只留下"shell admitted, U=…"，既没有载荷也没有目标 | 每条决策带 `args_digest`，旁边带 `tool_source`，开关现在真的存限量副本 |
 | 11 | 凭据规则点名 `.ssh/id_*` | 读私钥被否决，而写 `authorized_keys`（持久访问）不被否决 | 目标是凭据目录，目录里哪个文件被碰都一样 |
+| 12 | 包元数据指向一个 tarball 里不存在的文件 | `dsh.bundle.patch` 指向补丁行而 `files` 没列它，于是注册表安装解析到没有行可应用的包——社区路径坏了，而本地路径却能用 | 补丁行进 `files`，并在发布校验中断言元数据引用的每个路径都在 tarball 内 |
 
 ## 十一、溯源与许可
 
