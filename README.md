@@ -253,7 +253,7 @@ Every entry here was found by running this plugin on a live profile; each names 
 ## Tests
 
 ```
-node --test test/core.test.mjs        # 51 tests, no dependencies
+node --test test/core.test.mjs        # 66 tests, no dependencies
 ```
 
 Covers the ported contract (fail-closed attestation and gate validation, the

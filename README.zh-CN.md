@@ -247,7 +247,7 @@ tools:
 ## 十、测试
 
 ```
-node --test test/core.test.mjs      # 51 项，无依赖
+node --test test/core.test.mjs      # 66 项，无依赖
 ```
 
 覆盖移植契约（fail-closed 口供与门校验、慢升快降、挂起端点与 `resume()` **不**做什么、

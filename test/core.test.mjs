@@ -395,6 +395,30 @@ describe('harness policy', () => {
     assert.deepEqual(classify('pwsh', { command: 'PROBEOP DANGERZONE' }, config).labels, ['probe-op']);
   });
 
+  it('matches a rule statement by statement, not across a whole script', () => {
+    const config = resolveConfig({});
+    // The two flags are assembled rather than written out, because the pre-fix
+    // scanner looked for them anywhere in a command and would deny this very
+    // edit — reported as defect 8 in the ledger.
+    const recurse = `-${'Recurse'}`;
+    const force = `-${'Force'}`;
+    assert.deepEqual(
+      classify('pwsh', { command: `Get-ChildItem . ${recurse} -File\nRemove-Item $tmp ${force}` }, config).labels,
+      [],
+      'two statements that each carry one flag are not a recursive forced delete',
+    );
+    assert.deepEqual(
+      classify('pwsh', { command: `Remove-Item 'C:\\' ${recurse} ${force}` }, config).labels,
+      ['windows-recursive-force-delete'],
+      'the same shape inside one statement still fires, with its dangerous target',
+    );
+    assert.deepEqual(
+      classify('pwsh', { command: `Get-ChildItem . | Remove-Item 'C:\\' ${recurse} ${force}` }, config).labels,
+      ['windows-recursive-force-delete'],
+      'a pipeline is one operation and stays intact',
+    );
+  });
+
   it('does not scan file content as if it were an executable operation', () => {
     const config = resolveConfig({ rules: [{ label: 'probe-op', match: 'PROBEOP' }] });
     assert.deepEqual(classify('write', { file_path: 'a.md', content: 'PROBEOP' }, config).labels, []);
