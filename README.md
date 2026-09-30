@@ -218,7 +218,11 @@ Observed on a `danger-full-access` desktop profile with this bundle installed:
 6. **The UI cannot steer the guard.** `/entropy/state` answers `GET`/`HEAD` and returns 405 to anything else, and the Client half issues no other request — observation without a write path back into the governor.
 7. **A failed tool call is a rejected cycle, even when it failed for a reason outside the agent's control.** Batching a read with an edit of the same file fails the edit — the filesystem observation policy wants the read to have happened in an earlier turn — and under the faithful `fastDown: 'error'` that costs a gear level. On this profile, two such failures plus the three ladder-refused retries that followed walked the session from G4 to G0 in a single round. If you drive an agent under this guard, hand it the pattern explicitly: **read in one turn, edit in the next.**
 
-## Defect ledger (v0.1 → v0.2)
+## 0.2.1
+
+- **Statement-scoped the pattern rules (defect 8).** The Windows recursive-delete rule used two lookaheads that scanned a *whole command*, so a script that listed a directory with one flag and removed a single file with the other was graded as one recursive forced delete — it denied this bundle's own release command while 0.2.0 was being published. Rules now match statement by statement (`;`, `&&`, `||`, escaped newline), and pipelines stay intact because `|` chains a single operation. 66 tests (the count printed in this file said 51 in 0.2.0).
+
+## Defect ledger (v0.1 → v0.2.1)
 
 Every entry here was found by running this plugin on a live profile; each names the fix that closed it. The pattern is the point: the defects cluster where a Python-shaped control law meets a tool registry, and three of them were the guard mis-grading *its own maintenance*.
 
