@@ -233,7 +233,17 @@ Observed on a `danger-full-access` desktop profile with this bundle installed:
 
 - **The published package now carries its own bundle patch (defect 12).** `package.json` declared `dsh.bundle.patch: "./cordis.patch.yml"` while `files` did not list that file, so the npm tarball shipped 13 files without the patch row its own metadata points at: a **registry** install (a bundle spec rather than a local path) resolved to a package with no row to apply, and only a local-path install worked. Found by comparing the published 0.2.2 tarball against its commit, file by file. The fix is one line in `files`; the verification for this release asserts that every path `package.json` references — `icon`, `exports`, `dsh.bundle.patch` — exists inside the tarball.
 
-## Defect ledger (v0.1 → v0.2.3)
+## 0.2.4
+
+- **The published package carries its own tests.** `test/` is now in `files`, so the suite that certifies a release can be re-run by whoever installs it — verified by running it *from inside the published tarball* (71/71). Before this the package shipped a chain verifier but asked the reader to take the test count on faith, which contradicts the standard the rest of this project is held to. Cost: about 42 KB.
+- **The probe and audit scripts ship in `tools/`**: `coverage-audit.mjs` (the rule table against the PRE-GHR XLI corpus), `probe-boundary.mjs`, `probe-encoded.mjs`, `probe-filewrite.mjs`. They are how the numbers in this file were produced, and therefore how they can be recomputed.
+- `node --test test/core.test.mjs` — the **file**, not the directory: `node --test test/` reports nothing on Node 24, which has twice been mistaken for a broken suite. The suite's own header says so now.
+
+## 0.3.0
+
+- **The ladder's state is folded back out of the chain on activation (defect 13).** The state existed only as a trajectory in the entries, so every restart re-started the ladder at `initialGear` while the chain kept describing a session that had climbed — measured on a live profile as `cycles 0` beside **413 decisions**. A new activation now folds the last written value of gear, sigma, cycle, clean streak, consecutive rejections and suspension out of the chain, applies it, and records a `restore` entry saying what it applied. `init` is an activation marker rather than an origin — that is precisely what lets autonomy survive a restart. `reset` **is** an origin, so a human reset still means a blank sheet. A **tampered** chain is never used as a state source, and `restoreState: false` restores the previous fresh-session behaviour. `tool_error` now carries the post-transition state, so an errored settle folds exactly. Bounded caveat: the fold is exact to the last state-bearing entry — a *clean* settle after the final decision is not itself an entry, so sigma and the clean streak can be one cycle stale.
+
+## Defect ledger (v0.1 → v0.3.0)
 
 Every entry here was found by running this plugin on a live profile; each names the fix that closed it. The pattern is the point: the defects cluster where a Python-shaped control law meets a tool registry, and three of them were the guard mis-grading *its own maintenance*.
 
@@ -251,6 +261,7 @@ Every entry here was found by running this plugin on a live profile; each names 
 | 10 | `audit.includeArguments` was documented but never read, and decision entries named no object | A deployment that switched payload recording on got silence; an encoded `exec` call left "shell admitted, U=…" and nothing else — neither the payload nor the target | `args_digest` on every decision, `tool_source` beside it, and the switch now stores a bounded copy |
 | 11 | The credential rule named `.ssh/id_*` | Reading a private key was vetoed while writing `authorized_keys` — persistent access — was not | the credential directories are the target, whichever file inside them is touched |
 | 12 | The package metadata pointed at a file the tarball did not carry | `dsh.bundle.patch` named the bundle patch while `files` omitted it, so a registry install resolved to a package with no row to apply — the community path was broken while the local path worked | the patch ships in `files`, and the release check asserts that every path the metadata references exists inside the tarball |
+| 13 | The chain recorded the session, and the session threw its own state away at every restart | Measured on a live profile: `cycles 0` beside 413 decisions. A session that had climbed and then been rejected back to G2 restarted *more* permissive at `initialGear`, with the evidence for doing better sitting in the chain | a new activation folds gear, sigma, cycle, clean streak, rejections and suspension out of the chain, records a `restore` entry, and refuses a tampered chain as a state source |
 
 ## Threat model boundaries (inherited from upstream)
 
@@ -272,7 +283,7 @@ Every entry here was found by running this plugin on a live profile; each names 
 ## Tests
 
 ```
-node --test test/core.test.mjs        # 68 tests, no dependencies
+node --test test/core.test.mjs        # 71 tests, no dependencies
 ```
 
 Covers the ported contract (fail-closed attestation and gate validation, the

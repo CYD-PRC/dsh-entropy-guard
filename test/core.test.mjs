@@ -7,7 +7,9 @@
  * README claims: risky calls are denied, the control tool is exempt, and a
  * suspension keeps G0 read-only work available.
  *
- * Run: node --test test/
+ * Run: node --test test/core.test.mjs
+ *      (pass the file: the directory form `node --test test/` reports nothing on
+ *       Node 24, which has twice been mistaken for a broken suite)
  */
 
 import assert from 'node:assert/strict';
@@ -984,5 +986,101 @@ describe('harness controller', () => {
     const c = controller({ enabled: false });
     assert.equal(c.guard({ name: 'pwsh', arguments: { command: 'rm -rf /' }, callId: '1' }), undefined);
     assert.equal(c.promptLine(), '');
+  });
+
+  it('folds the ladder state back out of the chain on activation (defect 13)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entropy-restore-'));
+    const path = join(dir, 'chain.jsonl');
+    try {
+      const config = resolveConfig({ fallback: { maxConsecutiveRejections: 8 } });
+      const first = new EntropyController({ agentId: 'a', config, auditPath: path });
+      // Two clean cycles, not three: the third reaches `patience` and escalates a
+      // gear, and a transition deliberately clears the patience counter.
+      for (const id of ['1', '2']) {
+        first.guard({ name: 'read', arguments: {}, callId: id });
+        first.settle(id, false);
+      }
+      assert.equal(first.runtime.state.cleanStreak, 2);
+      // One errored call: sigma rises, the streak resets, and the ladder drops a
+      // gear. Because `tool_error` carries the post-transition state, the fold has
+      // to see all three.
+      first.guard({ name: 'read', arguments: {}, callId: '4' });
+      first.settle('4', true);
+      assert.equal(first.runtime.state.cleanStreak, 0);
+      assert.ok(first.runtime.state.sigma > 0);
+
+      const second = new EntropyController({ agentId: 'a', config, auditPath: path });
+      assert.notEqual(second.runtime.restoredState, null, 'the state is folded, not discarded');
+      assert.equal(second.runtime.state.gear, first.runtime.state.gear);
+      assert.equal(second.runtime.state.sigma, first.runtime.state.sigma);
+      assert.equal(second.runtime.state.cleanStreak, first.runtime.state.cleanStreak);
+      const restore = second.runtime.audit.entries.filter((e) => e.kind === 'restore').at(-1);
+      assert.equal(restore.applied, true);
+      assert.match(restore.reason, /folded \d+ entr/);
+      assert.equal(second.runtime.audit.entries.filter((e) => e.kind === 'init').at(-1).restored, true);
+      assert.match(second.report(), /restore\s+state folded from the chain/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('starts fresh when asked, and treats a human reset as the fold origin', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entropy-fresh-'));
+    const path = join(dir, 'chain.jsonl');
+    try {
+      const config = resolveConfig({ fallback: { maxConsecutiveRejections: 8 } });
+      const first = new EntropyController({ agentId: 'a', config, auditPath: path });
+      for (const id of ['1', '2']) {
+        first.guard({ name: 'read', arguments: {}, callId: id });
+        first.settle(id, false);
+      }
+      first.setGear(Gear.SUGGEST);
+
+      const off = new EntropyController({
+        agentId: 'a',
+        config: resolveConfig({ restoreState: false, fallback: { maxConsecutiveRejections: 8 } }),
+        auditPath: path,
+      });
+      assert.equal(off.runtime.restoredState, null);
+      assert.equal(off.runtime.state.gear, Gear.EXECUTE, 'a fresh session starts at initialGear');
+      assert.match(off.runtime.restoreNote, /disabled/);
+
+      // That deliberately fresh activation must not erase the state for later
+      // activations: the human's gear choice still folds out.
+      const third = new EntropyController({ agentId: 'a', config, auditPath: path });
+      assert.equal(third.runtime.state.gear, Gear.SUGGEST, 'the human gear choice survived');
+
+      third.reset();
+      assert.equal(third.runtime.state.gear, Gear.EXECUTE);
+      const after = new EntropyController({ agentId: 'a', config, auditPath: path });
+      assert.equal(after.runtime.state.gear, Gear.EXECUTE, 'the reset is the new origin');
+      assert.equal(after.runtime.state.cleanStreak, 0);
+      assert.equal(after.runtime.state.sigma, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never folds a tampered chain back into state', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entropy-tamper-'));
+    const path = join(dir, 'chain.jsonl');
+    try {
+      const config = resolveConfig({ fallback: { maxConsecutiveRejections: 8 } });
+      const first = new EntropyController({ agentId: 'a', config, auditPath: path });
+      first.guard({ name: 'read', arguments: {}, callId: '1' });
+      first.settle('1', false);
+
+      const lines = readFileSync(path, 'utf8').split('\n').filter((line) => line.trim() !== '');
+      const index = lines.findIndex((line) => line.includes('"kind":"gate_decision"'));
+      lines[index] = lines[index].replace('"tool":"read"', '"tool":"wr1te"');
+      writeFileSync(path, `${lines.join('\n')}\n`, 'utf8');
+
+      const second = new EntropyController({ agentId: 'a', config, auditPath: path });
+      assert.equal(second.runtime.restoredState, null);
+      assert.match(second.runtime.restoreNote, /tampered/);
+      assert.equal(second.runtime.audit.entries.filter((e) => e.kind === 'restore').at(-1).applied, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -249,7 +249,7 @@ tools:
 ## 十、测试
 
 ```
-node --test test/core.test.mjs      # 68 项，无依赖
+node --test test/core.test.mjs      # 71 项，无依赖
 ```
 
 覆盖移植契约（fail-closed 口供与门校验、慢升快降、挂起端点与 `resume()` **不**做什么、
@@ -355,7 +355,28 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
   修复是 `files` 里加一行；本次发布的校验会断言 `package.json` 引用的每个路径
   （`icon`、`exports`、`dsh.bundle.patch`）都存在于 tarball 内。
 
-## 十三、缺陷账（v0.1 → v0.2.3）
+## 0.2.4
+
+- **发布的包现在带上自己的测试。** `test/` 进了 `files`，于是认证一次发布的套件可以被任何安装它的人**重跑**——
+  这一点是在**已发布的 tarball 内部**跑出来验证的（71/71）。在此之前，包里有一个验链器，却要求读者对测试数**凭信**，
+  这与本项目其余部分所遵循的标准相矛盾。代价约 42 KB。
+- **探针与审计脚本进 `tools/`**：`coverage-audit.mjs`（用 PRE-GHR XLI 语料跑规则表）、`probe-boundary.mjs`、
+  `probe-encoded.mjs`、`probe-filewrite.mjs`。本文里那些数字就是它们产出的，因此也是它们可以被重算的原因。
+- `node --test test/core.test.mjs` —— 传**文件**而不是目录：Node 24 下 `node --test test/` 什么都不报，
+  这一点已经被误当成"套件坏了"两次。套件自己的文件头现在写明了。
+
+## 0.3.0
+
+- **阶梯状态在激活时从链上折回（缺陷 13）。** 状态原本只作为轨迹存在于条目里，于是每次重启阶梯都从 `initialGear`
+  重来，而链仍在描述一个已经爬升过的会话——在真实 profile 上实测为 **413 decisions 而 `cycles 0`**。
+  现在一次新的激活会把 gear、σ、cycle、clean streak、连续拒绝数与挂起状态按"最后写入者胜"折回来、应用它，
+  并记一条 `restore` 条目说明应用了什么。`init` 是激活标记、**不是**原点——这正是自主权能跨重启存活的原因。
+  `reset` **是**原点，所以人工重置仍意味着白纸一张。**被篡改**的链永不作为状态来源；`restoreState: false`
+  恢复此前"每次全新会话"的行为。`tool_error` 现在带转移后的状态，所以"报错后的 settle"折得精确。
+  有界的保留说明：折算是精确到**最后一条带状态的条目**——最后一条决策之后的**成功** settle 本身不是条目，
+  因此 σ 与 clean streak 可能相差一个周期。
+
+## 十三、缺陷账（v0.1 → v0.3.0）
 
 以下每一条都是在真实 profile 上跑出来的，并注明关闭它的修复。规律本身就是结论：
 缺陷集中在"Python 形状的控制律撞上工具注册表"的地方，其中三条是守卫**误判了自己的维护动作**。
@@ -374,6 +395,7 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
 | 10 | `audit.includeArguments` 有文档却从未被读取，且决策条目不记录对象 | 打开载荷记录的部署得到的是沉默；一次编码 `exec` 调用在链里只留下"shell admitted, U=…"，既没有载荷也没有目标 | 每条决策带 `args_digest`，旁边带 `tool_source`，开关现在真的存限量副本 |
 | 11 | 凭据规则点名 `.ssh/id_*` | 读私钥被否决，而写 `authorized_keys`（持久访问）不被否决 | 目标是凭据目录，目录里哪个文件被碰都一样 |
 | 12 | 包元数据指向一个 tarball 里不存在的文件 | `dsh.bundle.patch` 指向补丁行而 `files` 没列它，于是注册表安装解析到没有行可应用的包——社区路径坏了，而本地路径却能用 | 补丁行进 `files`，并在发布校验中断言元数据引用的每个路径都在 tarball 内 |
+| 13 | 链记录了会话，而会话在每次重启时把自己的状态丢掉 | 真实 profile 实测：**413 decisions 而 `cycles 0`**——一个爬升过、又被拒绝打回 G2 的会话，重启后按 `initialGear` 反而**更宽松**，而"本可以做得更好"的证据就躺在链里 | 新激活从链上折回 gear/σ/cycle/clean streak/连续拒绝/挂起，记一条 `restore` 条目，并拒绝把被篡改的链当作状态来源 |
 
 ## 十一、溯源与许可
 
