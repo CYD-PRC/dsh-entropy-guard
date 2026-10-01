@@ -17,6 +17,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { gzipSync } from 'node:zlib';
 
 import {
   AuditLog,
@@ -32,6 +33,7 @@ import {
 } from '../lib/core.js';
 import { classify, resolveConfig } from '../lib/config.js';
 import { EntropyController } from '../lib/controller.js';
+import { jsonEquivalent, matchesReference, readTarGz } from '../tools/verify-release.mjs';
 
 /** A utility that always denies, for exercising the rejection path. */
 const alwaysDeny = () => 0;
@@ -1082,5 +1084,56 @@ describe('harness controller', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('release verification', () => {
+  /** A minimal tar.gz writer, so the reader is exercised against real bytes. */
+  function buildTarGz(files) {
+    const blocks = [];
+    for (const [path, text] of Object.entries(files)) {
+      const body = Buffer.from(text, 'utf8');
+      const header = Buffer.alloc(512);
+      header.write(path, 0, 'utf8');
+      header.write(body.length.toString(8).padStart(11, '0'), 124, 'utf8');
+      header[156] = 48;
+      header.write('ustar', 257, 'utf8');
+      header.write('        ', 148, 'utf8');
+      let sum = 0;
+      for (const byte of header) sum += byte;
+      header.write(sum.toString(8).padStart(6, '0'), 148, 'utf8');
+      blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+    }
+    blocks.push(Buffer.alloc(1024));
+    return gzipSync(Buffer.concat(blocks));
+  }
+
+  it('treats a packer-rewritten package.json as equivalent, not as a difference', () => {
+    const withNewline = '{\n  "name": "x",\n  "version": "1.0.0"\n}\n';
+    const stripped = '{\n  "name": "x",\n  "version": "1.0.0"\n}';
+    assert.equal(jsonEquivalent(withNewline, stripped), true, 'the packer strips the trailing newline');
+    assert.equal(jsonEquivalent('{"a":1,"b":2}', '{"b":2,"a":1}'), true, 'key order is the packer business too');
+    assert.equal(jsonEquivalent('{"a":1}', '{"a":2}'), false);
+    assert.equal(jsonEquivalent('not json', '{"a":1}'), false);
+  });
+
+  it('resolves metadata references as files, directories or globs', () => {
+    const paths = ['index.js', 'lib/core.js', 'lib/config.js', 'locale/en.json', 'locale/zh.json'];
+    assert.equal(matchesReference('./index.js', paths), true);
+    assert.equal(matchesReference('lib', paths), true, 'a directory reference ships a tree');
+    assert.equal(matchesReference('./locale/*.json', paths), true, 'a glob is not a filename — the audit false positive');
+    assert.equal(matchesReference('./missing.js', paths), false);
+    assert.equal(matchesReference('locales', paths), false, 'a prefix that is not a path boundary');
+  });
+
+  it('reads a .tar.gz in process, without tar', () => {
+    const artifact = readTarGz(buildTarGz({
+      'package/index.js': 'export const a = 1;\n',
+      'package/lib/x.js': 'x',
+      'package/locale/en.json': '{}',
+    }));
+    assert.deepEqual([...artifact.keys()].sort(), ['index.js', 'lib/x.js', 'locale/en.json']);
+    assert.equal(artifact.get('index.js').toString('utf8'), 'export const a = 1;\n');
+    assert.equal(artifact.get('lib/x.js').toString('utf8'), 'x');
   });
 });
