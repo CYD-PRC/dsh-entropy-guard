@@ -749,7 +749,7 @@ describe('chain integrity and reading discipline', () => {
     const reading = audit.verify();
     assert.equal(reading.ok, false);
     assert.equal(reading.brokenAt, 0);
-    assert.match(reading.reason, /modified/);
+    assert.match(reading.reason, /does not hash to its recorded value/, 'the shared contract wording (0.3.4)');
   });
 
   it('detects a dropped entry', () => {
@@ -778,7 +778,7 @@ describe('chain integrity and reading discipline', () => {
     assert.equal(reading.clean, false);
     assert.equal(reading.interleaved, 1);
     assert.equal(reading.brokenAt, null);
-    assert.match(reading.reason, /two plugin generations/);
+    assert.match(reading.reason, /two generations wrote this chain/, 'the shared package does not presume plugins (0.3.4 migration note)');
     assert.deepEqual(reading.chainedRange, [1, 1]);
   });
 

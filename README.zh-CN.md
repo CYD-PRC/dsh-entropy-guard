@@ -415,6 +415,20 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
   "除此之外无事"的破行链上 `reason` 是空的。现在它说 `1 unparsable line(s) (reported, not
   graded)`——与兄弟分级器逐字一致，同一份字节在两个校验器上读出同一句话。
 
+## 0.3.4
+
+- **链迁到 `@cyd-prc/dsh-audit-chain`。** `AuditLog` 现在是共享的 `ChainLog` 加上只有本插件在用的
+  读数（`replayState`、`gearHistogram`、`gateAcceptanceRate`）；写入者、锁、破行规则、封存与分级器
+  在三个守卫间只剩一处实现。这是本文件缺陷账的结构性收口：链的两份副本曾漂移到同一文件上
+  （S3 搭进两个包、锁隔了一次实测分叉事故才过去）——一条链、一份实现，分级修复再也不会
+  只修一边。依赖是**内嵌**的（`bundleDependencies`、精确钉版），安装出的实件仍然自足，
+  发布校验会核对内嵌副本与钉版一致。一处预期内措辞变化：交错原因现在说「two generations
+  wrote this chain」（共享包不预设插件）。`tools/verify-release.mjs` 随本版升到最新代
+  （根 packument 检查、bundleDependencies 感知、代码引用扫描跳过 `node_modules/`）。
+  **打包注意**：`bundleDependencies` 需要 **npm** 来打包——pnpm 在默认的 isolated linker 下
+  会拒绝内嵌依赖（`ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`）；用 pnpm 复算打包的用户
+  需加 `nodeLinker: hoisted`。
+
 ## 十三、缺陷账（v0.1 → v0.3.3）
 
 以下每一条都是在真实 profile 上跑出来的，并注明关闭它的修复。规律本身就是结论：
