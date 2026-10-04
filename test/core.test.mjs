@@ -36,7 +36,7 @@ import {
 } from '../lib/core.js';
 import { classify, resolveConfig } from '../lib/config.js';
 import { EntropyController } from '../lib/controller.js';
-import { jsonEquivalent, matchesReference, readTarGz, scanShippedReferences } from '../tools/verify-release.mjs';
+import { jsonEquivalent, looksLikeText, matchesReference, readTarGz, sameTextModuloLineEndings, scanShippedReferences, treeHeadOf } from '../tools/verify-release.mjs';
 
 /** The repository root, for driving the shipped tools in a subprocess. */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -266,6 +266,7 @@ describe('audit chain', () => {
       assert.equal(reading.status, 'verified');
       assert.equal(reading.chained, 2);
       assert.equal(reading.corrupt, 1, 'the torn line is reported, not silently absorbed');
+      assert.match(reading.reason, /unparsable/, 'clause 8: the reason names the corrupt line');
       // M4's exact shape: sealing a torn-tail chain writes a parseable entry.
       const before = audit.seal('after a torn tail');
       assert.equal(before.corrupt, 1);
@@ -1319,6 +1320,25 @@ describe('release verification', () => {
     const result = spawnSync(process.execPath, [tool, '--wait', '-5'], { encoding: 'utf8' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /--wait wants a non-negative number/);
+  });
+
+  it('compares text modulo line endings, so a Windows checkout cannot fake a DIFF (defect 20)', () => {
+    assert.equal(sameTextModuloLineEndings('a\nb\n', 'a\r\nb\r\n'), true, 'CRLF checkout vs LF artifact');
+    assert.equal(sameTextModuloLineEndings('a\nb\n', 'a\nc\n'), false, 'a real difference still differs');
+    assert.equal(sameTextModuloLineEndings('a\r\nb\r\n', 'a\nc\r\n'), false);
+    // Text-ness is sniffed from bytes, not the name: LICENSE has no extension,
+    // and a binary never enters the comparison.
+    assert.equal(looksLikeText(Buffer.from('MIT License\n\nCopyright\n', 'utf8')), true);
+    assert.equal(looksLikeText(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d])), false, 'a PNG header is not text');
+  });
+
+  it('names the tree HEAD it compared against (defect 20)', () => {
+    // The suite also runs *inside* the artifact (--run-tests), where there is
+    // no .git — so the expectation comes from git's own answer, whatever it is.
+    const probe = spawnSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    const expected = probe.status === 0 ? probe.stdout.trim() : null;
+    assert.equal(treeHeadOf(REPO_ROOT), expected, 'the output names the tree being compared');
+    assert.equal(treeHeadOf(join(tmpdir(), 'definitely-not-a-repo')), null, 'outside a checkout it says so');
   });
 
   it('verify-chain never writes to the chain it audits (defect 16)', () => {

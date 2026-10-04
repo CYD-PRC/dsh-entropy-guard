@@ -60,6 +60,28 @@ const ROOT = dirname(HERE);
 /** Directories that are never part of an artifact. */
 const SKIP_DIRS = new Set(['.git', 'node_modules']);
 
+/**
+ * Could these bytes be a text file? No NUL and valid UTF-8. This — not the
+ * file name — decides the line-ending equivalence class: `LICENSE` has no
+ * extension, and an `.svg` is text, while a `.png` in the tree never wants the
+ * comparison at all.
+ */
+const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
+
+/**
+ * @param buffer - raw file bytes.
+ * @returns whether the bytes are text for comparison purposes.
+ */
+export function looksLikeText(buffer) {
+  if (buffer.includes(0)) return false;
+  try {
+    TEXT_DECODER.decode(buffer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const sha256 = (buffer) => createHash('sha256').update(buffer).digest('hex');
 const sha1 = (buffer) => createHash('sha1').update(buffer).digest('hex');
 
@@ -88,6 +110,37 @@ export function jsonEquivalent(a, b) {
     return canonicalJson(JSON.parse(a)) === canonicalJson(JSON.parse(b));
   } catch {
     return false;
+  }
+}
+
+/**
+ * Are two texts equal once CRLF is normalised to LF?
+ *
+ * `core.autocrlf=true` is the default on Windows, so a fresh checkout there
+ * holds CRLF bytes where the artifact holds LF. Comparing raw bytes then turns
+ * every text file into a false DIFF — measured by the test side as 17 phantom
+ * mismatches on a good release, nearly declared bad (defect 20).
+ * @param a - first text.
+ * @param b - second text.
+ * @returns true when the texts agree modulo line endings.
+ */
+export function sameTextModuloLineEndings(a, b) {
+  return a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n');
+}
+
+/**
+ * The tree's HEAD commit, so a reading names what it compared against — the
+ * first question a mismatch report has to answer is "which tree was this?".
+ * @param root - the tree root.
+ * @returns the short hash, or null outside a git checkout.
+ */
+export function treeHeadOf(root) {
+  try {
+    const result = spawnSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: root, encoding: 'utf8' });
+    const head = result.status === 0 ? result.stdout.trim() : '';
+    return /^[0-9a-f]{7,40}$/.test(head) ? head : null;
+  } catch {
+    return null;
   }
 }
 
@@ -179,6 +232,16 @@ function compareArtifact(artifact, tree) {
     }
     if (path.endsWith('.json') && jsonEquivalent(readFileSync(join(ROOT, path), 'utf8'), bytes.toString('utf8'))) {
       rows.push({ path, verdict: 'match (json-equivalent; bytes differ by the packer)' });
+      continue;
+    }
+    // A checkout may legitimately hold CRLF where the artifact holds LF: text
+    // files compare modulo line endings, and the report says so (defect 20).
+    // Text-ness is sniffed from the bytes, not the name, so `LICENSE` (no
+    // extension) is covered and a `.png` never enters the comparison.
+    const localBytes = readFileSync(join(ROOT, path));
+    if (looksLikeText(localBytes) && looksLikeText(bytes)
+      && sameTextModuloLineEndings(localBytes.toString('utf8'), bytes.toString('utf8'))) {
+      rows.push({ path, verdict: 'match (line endings normalized by the checkout)' });
       continue;
     }
     rows.push({ path, verdict: 'DIFF' });
@@ -396,6 +459,7 @@ function main(argv) {
   const manifestText = readFileSync(join(ROOT, 'package.json'), 'utf8');
   const manifest = JSON.parse(manifestText);
   const spec = options.spec ?? `${manifest.name}@${manifest.version}`;
+  const treeHead = treeHeadOf(ROOT);
   // The tree anchor is this file's own location. Running this copy against a
   // *different* package compares the wrong trees and reports every file as a
   // difference (defect 17): refuse the mismatch rather than print 14 false DIFFs.
@@ -445,10 +509,10 @@ function main(argv) {
 
       if (options.json) {
         process.stdout.write(`${JSON.stringify({
-          source, spec, files: artifact.size, comparison, references, codeReferences, localOnly, tests,
+          source, spec, treeHead, files: artifact.size, comparison, references, codeReferences, localOnly, tests,
         }, null, 2)}\n`);
       } else {
-        process.stdout.write(`verify-release: ${source} (${artifact.size} files)\n`);
+        process.stdout.write(`verify-release: ${source} (${artifact.size} files) · tree ${treeHead ?? '(unknown HEAD)'}\n`);
         for (const row of comparison.rows) {
           if (row.verdict !== 'match') process.stdout.write(`  ${row.path.padEnd(28)} ${row.verdict}\n`);
         }

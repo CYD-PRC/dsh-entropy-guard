@@ -258,7 +258,12 @@ Observed on a `danger-full-access` desktop profile with this bundle installed:
 - **The sibling guards' observers are control-plane tools too.** `shape_status` and `threat_status` join `entropy_status` in the G0/exempt set. Unknown tools attest to G3, so a demoted session used to lose the *diagnostic* readings of the other guards on the same chain at exactly the moment it needed them. The cross-plugin convention: every guard classes `*_status` observers as read-only.
 - **The guard caught its own builder — and the chain proved it.** During the sibling packages' 0.1.x line, a builder agent corrupted a JSON manifest with an encoding-rewriting editor (the trigger is the builder's own account; the chain records what followed), then retried the refused shell tool until the ladder de-escalated the session G4 → G1 within a second (`gear_transition` at seq 652/655/658, σ 0.1 → 0.3) and refused the next call outright (`call_rejected`, seq 659: `gear G2 Plan does not permit G3 Execute`). The escape path this README promises held under real conditions: the refusal named the permitted read-only tools, the agent stopped retrying, and it climbed G1 → G4 over about six minutes of clean cycles (seq 663/668/671) with zero further rejections. The episode is hash-linked in the chain and recomputable with `tools/verify-chain.mjs` — demotion is real, the escape path is real, and recovery is real.
 
-## Defect ledger (v0.1 → v0.3.2)
+## 0.3.3
+
+- **The release checker no longer reads a Windows checkout as a forgery (defect 20).** `core.autocrlf=true` is the default on Windows, so a fresh checkout there holds CRLF where the artifact holds LF — and comparing raw bytes turned every text file into a false `DIFF`. The test side measured 17 phantom mismatches on the good 0.3.2 release and nearly declared it bad; the first fix attempt still missed `LICENSE`, because a file without an extension is text too. Text-ness is now sniffed from the bytes (NUL-free, valid UTF-8), text compares modulo line endings, and those files report `match (line endings normalized by the checkout)` — the same equivalence class the packer's `package.json` newline already had. The header line also names the tree's HEAD commit (`· tree 42782e3`), so a reading always says which tree it compared.
+- **A `verified` reading names its corrupt lines (contract clause 8, the letter).** The counts always travelled; the `reason` string stayed empty on an otherwise-quiet chain with a torn line. It now says `1 unparsable line(s) (reported, not graded)` — the sibling grader's wording, so the same bytes read the same on both.
+
+## Defect ledger (v0.1 → v0.3.3)
 
 Every entry here was found by running this plugin on a live profile; each names the fix that closed it. The pattern is the point: the defects cluster where a Python-shaped control law meets a tool registry, and three of them were the guard mis-grading *its own maintenance*.
 
@@ -283,6 +288,7 @@ Every entry here was found by running this plugin on a live profile; each names 
 | 17 | The release checker's tree anchor was its own location | Running one package's copy against another package printed fourteen false `DIFF`s and said nothing about why | a `--spec` naming a different package is refused with an explanation |
 | 18 | Shipped code could read files the artifact does not carry, below the metadata ring | The sibling guard shipped an invariant harness whose `DESIGN-v1.md` and external negative anchor were not in its tarball | `verify-release` scans the artifact's shipped code for file literals that resolve nowhere in it |
 | 19 | An append fused into a crash-torn tail line | The entry was lost and the line count did not grow — a `seal()` on such a chain "succeeded" while writing nothing parseable (the test side's M4) | every append terminates a torn tail first; the torn line stays as a counted `corrupt` line — reported, never silently absorbed |
+| 20 | The release checker compared raw checkout bytes against artifact bytes | On Windows (`core.autocrlf=true`, the default) every text file read as a false `DIFF` — 17 phantom mismatches on the good 0.3.2 release, nearly declared bad by the test side; the first fix still missed `LICENSE` (a file without an extension is text too) | text-ness is sniffed from bytes (NUL-free valid UTF-8), text compares modulo line endings and says so (`match (line endings normalized by the checkout)`), and the header names the tree's HEAD commit |
 
 ## Threat model boundaries (inherited from upstream)
 
@@ -304,7 +310,7 @@ Every entry here was found by running this plugin on a live profile; each names 
 ## Tests
 
 ```
-node --test test/core.test.mjs        # 85 tests, no dependencies
+node --test test/core.test.mjs        # 87 tests, no dependencies
 ```
 
 Covers the ported contract (fail-closed attestation and gate validation, the

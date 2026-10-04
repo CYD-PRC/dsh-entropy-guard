@@ -249,7 +249,7 @@ tools:
 ## 十、测试
 
 ```
-node --test test/core.test.mjs      # 85 项，无依赖
+node --test test/core.test.mjs      # 87 项，无依赖
 ```
 
 覆盖移植契约（fail-closed 口供与门校验、慢升快降、挂起端点与 `resume()` **不**做什么、
@@ -402,7 +402,20 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
 - **兄弟守卫的观察者也算控制面工具。** `shape_status` 与 `threat_status` 加入 `entropy_status` 所在的 G0/豁免集合。未知工具按 `defaultTool` 自证到 G3，于是过去会话一降档就会**先失掉**同链上其他守卫的**诊断读数**——恰恰在最需要读数的时候。跨插件约定：每个守卫都必须把 `*_status` 观察者归为只读。
 - **守卫抓到了它自己的构建者——链作证。** 在兄弟包 0.1.x 施工期间，一个构建 agent 用一个会改编码的编辑器写坏了 JSON 清单（触发原因来自构建者自述；链记录的是其后发生的事），随后它顶着拒绝重试同一个 shell 工具，直到阶梯在一秒内把会话从 G4 连降到 G1（`gear_transition` 在 seq 652/655/658，σ 0.1 → 0.3），并 outright 拒绝了下一次调用（`call_rejected`，seq 659：`gear G2 Plan does not permit G3 Execute`）。本 README 承诺的脱身通路在真实条件下成立：拒绝文案里列出了当时可用的只读工具，agent 停止重试，并用约六分钟的干净周期从 G1 逐级挣回 G4（seq 663/668/671），全程零新增拒绝。整段事件在链上 hash 链接、可用 `tools/verify-chain.mjs` 复算——降档是真的，脱身通路是真的，恢复也是真的。
 
-## 十三、缺陷账（v0.1 → v0.3.2）
+## 0.3.3
+
+- **发布校验器不再把 Windows 检出读成伪证（缺陷 20）。** `core.autocrlf=true` 是 Windows 默认，
+  于是一次新检出里全是 CRLF 而实件里是 LF——按原始字节比对就把每个文本文件都报成假 `DIFF`。
+  测试侧在完好的 0.3.2 发布上量出 17 处幻报、差点宣布它是坏的；第一版修复还漏了 `LICENSE`，
+  因为没有扩展名的文件也是文本。现在文本性按字节嗅探（无 NUL、合法 UTF-8），文本按行尾归一比较，
+  并如实报成 `match (line endings normalized by the checkout)`——与打包器改写 `package.json`
+  末尾换行同属一个等价类。头部行还会点名被验树的 HEAD 提交号（`· tree 42782e3`），
+  读数永远说清它比的是哪棵树。
+- **`verified` 读数现在点名它的不可解析行（契约第 8 条的字面）。** 计数一直在，但一条
+  "除此之外无事"的破行链上 `reason` 是空的。现在它说 `1 unparsable line(s) (reported, not
+  graded)`——与兄弟分级器逐字一致，同一份字节在两个校验器上读出同一句话。
+
+## 十三、缺陷账（v0.1 → v0.3.3）
 
 以下每一条都是在真实 profile 上跑出来的，并注明关闭它的修复。规律本身就是结论：
 缺陷集中在"Python 形状的控制律撞上工具注册表"的地方，其中三条是守卫**误判了自己的维护动作**。
@@ -428,6 +441,7 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
 | 17 | 发布校验器的树锚是它自己的位置 | 拿一个包的副本验另一个包会打出十四条假 `DIFF`，且不说明原因 | `--spec` 指向别的包名时被拒绝并附解释 |
 | 18 | 已交付代码可能读取实件并未携带的文件，低于元数据那一环 | 兄弟守卫交付的不变量检查器所读的 `DESIGN-v1.md` 与外部锚不在它的 tarball 里 | `verify-release` 扫描实件内已交付代码中的文件字面量，凡无处解析者列出 |
 | 19 | 追加融合进崩溃撕断的尾行 | 条目丢失、行数不增——对这样的链调 `seal()` "看起来成功"却没写下可解析的条目（测试侧的 M4） | 每次追加先终止破行；破行留在原地计入 `corrupt`——报出，绝不静默吞掉 |
+| 20 | 发布校验器拿检出原始字节对实件字节 | Windows 上（`core.autocrlf=true` 是默认）每个文本文件都读成假 `DIFF`——测试侧在完好的 0.3.2 上量出 17 处幻报、差点宣布好发布是坏的；第一版修复还漏了 `LICENSE`（无扩展名的文件也是文本） | 文本性按字节嗅探（无 NUL、合法 UTF-8），文本按行尾归一比较并如实报出（`match (line endings normalized by the checkout)`）；头部行点名被验树的 HEAD 提交号 |
 
 ## 十一、溯源与许可
 
