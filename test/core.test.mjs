@@ -778,7 +778,7 @@ describe('chain integrity and reading discipline', () => {
     assert.equal(reading.clean, false);
     assert.equal(reading.interleaved, 1);
     assert.equal(reading.brokenAt, null);
-    assert.match(reading.reason, /two plugin generations/);
+    assert.match(reading.reason, /two generations wrote this chain/, 'the shared package does not presume plugins (0.3.4 migration note)');
     assert.deepEqual(reading.chainedRange, [1, 1]);
   });
 

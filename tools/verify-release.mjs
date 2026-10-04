@@ -291,12 +291,14 @@ const CODE_REFERENCE = /['"]([A-Za-z0-9._-]+\.(?:md|json|ya?ml|txt|js|mjs))['"]/
  *
  * A basename match counts as carried: a `join(dir, name)` literal and a nested
  * copy both satisfy it. That makes this a heuristic whose only job is to flag
- * references that resolve *nowhere* in the artifact. Two scoping decisions keep
+ * references that resolve *nowhere* in the artifact. Three scoping decisions keep
  * it quiet enough to be trusted:
  *
  *  - `test/` is not scanned: fixture names in tests are data, not reads
  *    (a `file_path` fixture value never opens the file it names), and a test
  *    that reads an unshipped fixture already fails the `--run-tests` ring.
+ *  - `node_modules/` is not scanned: bundled dependencies are someone else's
+ *    package — their own `verify-release` already vouched for them.
  *  - a literal without an extension never matches, so prose examples survive.
  *
  * @param artifact - the readTarGz map of artifact-relative path to bytes.
@@ -310,6 +312,7 @@ export function scanShippedReferences(artifact) {
   for (const [path, bytes] of artifact) {
     if (!/\.(?:js|mjs)$/.test(path)) continue;
     if (path.startsWith('test/')) continue;
+    if (path.startsWith('node_modules/')) continue;
     scanned += 1;
     const text = bytes.toString('utf8');
     for (const match of text.matchAll(CODE_REFERENCE)) {
@@ -350,12 +353,24 @@ async function fetchArtifact(spec, waitSeconds = 0) {
         lastProblem = `${name}@${version} is not in the registry yet`;
       } else {
         const response = await fetch(tarball);
-        if (response.ok) {
-          const bytes = Buffer.from(await response.arrayBuffer());
-          const integrityOk = meta.dist.shasum ? sha1(bytes) === meta.dist.shasum : null;
-          return { name, version: meta.version, bytes, meta, integrityOk };
+        if (!response.ok) {
+          lastProblem = `the tarball is not fetchable yet (HTTP ${response.status})`;
+        } else {
+          // M6: the version document and the tarball being 200 is not enough —
+          // `npm install <name>` enters through the ROOT packument, which
+          // propagates later (measured on a fresh package: ~2.5 minutes behind).
+          // A release is not verified while the name itself still 404s.
+          const packumentResponse = await fetch(base);
+          const packument = packumentResponse.ok ? await packumentResponse.json() : null;
+          if (packument?.versions?.[meta.version] === undefined) {
+            lastProblem = 'the root packument does not list it yet (install-by-name still fails)';
+          } else {
+            const bytes = Buffer.from(await response.arrayBuffer());
+            const integrityOk = meta.dist.shasum ? sha1(bytes) === meta.dist.shasum : null;
+            const latest = packument?.['dist-tags']?.latest ?? null;
+            return { name, version: meta.version, bytes, meta, integrityOk, latest };
+          }
         }
-        lastProblem = `the tarball is not fetchable yet (HTTP ${response.status})`;
       }
     } catch (error) {
       lastProblem = `registry read failed (${error?.message ?? error})`;
@@ -431,6 +446,35 @@ function runTestsInside(artifact) {
   }
 }
 
+/**
+ * A package carrying `bundleDependencies` ships those deps inlined under
+ * `node_modules/` in the tarball. They are not part of the tree comparison —
+ * they are somebody else's package — but their *versions* are this release's
+ * contract: the bundled copy must match the declared spec, and the spec must be
+ * an exact pin (a range makes the artifact's contents depend on when it was
+ * packed).
+ * @param manifest - the tree's package.json, parsed.
+ * @param artifact - the readTarGz map.
+ * @returns `{ checked: [{name, spec, bundled, ok}], mismatches: number, excluded: string[] }`.
+ */
+export function checkBundledDependencies(manifest, artifact) {
+  const bundled = Array.isArray(manifest.bundleDependencies) ? manifest.bundleDependencies : [];
+  const checked = [];
+  let mismatches = 0;
+  for (const name of bundled) {
+    const spec = manifest.dependencies?.[name] ?? null;
+    const packedManifest = artifact.get(`node_modules/${name}/package.json`);
+    const bundledVersion = packedManifest === undefined ? null : JSON.parse(packedManifest.toString('utf8')).version;
+    const ok = spec !== null && spec === bundledVersion;
+    if (!ok) mismatches += 1;
+    checked.push({ name, spec, bundled: bundledVersion, ok });
+  }
+  const excluded = bundled.length === 0
+    ? []
+    : [...artifact.keys()].filter((path) => bundled.some((name) => path.startsWith(`node_modules/${name}/`)));
+  return { checked, mismatches, excluded };
+}
+
 function main(argv) {
   const options = { spec: null, pack: false, runTests: false, json: false, packer: null, wait: 0 };
   for (let index = 0; index < argv.length; index += 1) {
@@ -489,10 +533,22 @@ function main(argv) {
         if (fetched.integrityOk === false) {
           process.stdout.write(`container integrity: MISMATCH (dist.shasum ${fetched.meta.dist.shasum})\n`);
         }
+        // Informational, never a failure: verifying an older release while a
+        // newer one is `latest` is ordinary work.
+        if (fetched.latest !== null && fetched.latest !== fetched.version) {
+          process.stdout.write(`note: dist-tags.latest is ${fetched.latest}; you are verifying ${fetched.version}\n`);
+        }
       }
       const artifact = readTarGz(bytes);
       const tree = walkTree(ROOT);
-      const comparison = compareArtifact(artifact, tree);
+      // Bundled dependencies ship inside the artifact under node_modules/: they
+      // are someone else's package, so they leave the tree comparison — but
+      // their versions are this release's contract.
+      const bundled = checkBundledDependencies(manifest, artifact);
+      const artifactForCompare = bundled.excluded.length === 0
+        ? artifact
+        : new Map([...artifact].filter(([path]) => !bundled.excluded.includes(path)));
+      const comparison = compareArtifact(artifactForCompare, tree);
       // The artifact's *own* metadata is what has to be self-consistent: a package
       // whose manifest points at something it does not carry is broken wherever it
       // is installed from, which is exactly what shipped in 0.2.2.
@@ -509,7 +565,7 @@ function main(argv) {
 
       if (options.json) {
         process.stdout.write(`${JSON.stringify({
-          source, spec, treeHead, files: artifact.size, comparison, references, codeReferences, localOnly, tests,
+          source, spec, treeHead, files: artifact.size, comparison, references, codeReferences, bundled, localOnly, tests,
         }, null, 2)}\n`);
       } else {
         process.stdout.write(`verify-release: ${source} (${artifact.size} files) · tree ${treeHead ?? '(unknown HEAD)'}\n`);
@@ -529,6 +585,14 @@ function main(argv) {
           process.stdout.write(`    UNRESOLVED ${entry.file} -> ${entry.reference}\n`);
         }
         process.stdout.write(`  in the tree but not in the artifact: ${localOnly.length === 0 ? '(none)' : localOnly.join(', ')}\n`);
+        if (bundled.checked.length > 0) {
+          process.stdout.write(`  bundled dependencies: ${bundled.checked.length}  mismatches: ${bundled.mismatches} (excluded from the tree comparison: ${bundled.excluded.length} files)\n`);
+          for (const entry of bundled.checked) {
+            if (!entry.ok) {
+              process.stdout.write(`    BUNDLED-MISMATCH ${entry.name}: manifest pins ${entry.spec ?? '(undeclared)'}, the artifact carries ${entry.bundled ?? '(absent)'}\n`);
+            }
+          }
+        }
         if (tests !== null) {
           process.stdout.write(`  suite inside the artifact: ${tests.ran ? `ran ${tests.testFile}, exit ${tests.status}` : tests.reason}\n`);
         }
@@ -537,6 +601,7 @@ function main(argv) {
         || references.missing > 0
         || references.promisedButAbsent.length > 0
         || codeReferences.unresolved.length > 0
+        || bundled.mismatches > 0
         || (tests !== null && tests.ran && tests.status !== 0);
       return failed ? 1 : 0;
     })
