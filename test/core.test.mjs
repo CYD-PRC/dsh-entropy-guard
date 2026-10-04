@@ -1333,7 +1333,10 @@ describe('release verification', () => {
   });
 
   it('names the tree HEAD it compared against (defect 20)', () => {
-    const expected = spawnSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).stdout.trim();
+    // The suite also runs *inside* the artifact (--run-tests), where there is
+    // no .git — so the expectation comes from git's own answer, whatever it is.
+    const probe = spawnSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    const expected = probe.status === 0 ? probe.stdout.trim() : null;
     assert.equal(treeHeadOf(REPO_ROOT), expected, 'the output names the tree being compared');
     assert.equal(treeHeadOf(join(tmpdir(), 'definitely-not-a-repo')), null, 'outside a checkout it says so');
   });
