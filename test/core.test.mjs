@@ -266,6 +266,7 @@ describe('audit chain', () => {
       assert.equal(reading.status, 'verified');
       assert.equal(reading.chained, 2);
       assert.equal(reading.corrupt, 1, 'the torn line is reported, not silently absorbed');
+      assert.match(reading.reason, /unparsable/, 'clause 8: the reason names the corrupt line');
       // M4's exact shape: sealing a torn-tail chain writes a parseable entry.
       const before = audit.seal('after a torn tail');
       assert.equal(before.corrupt, 1);
