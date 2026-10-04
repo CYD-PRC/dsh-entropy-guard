@@ -36,7 +36,7 @@ import {
 } from '../lib/core.js';
 import { classify, resolveConfig } from '../lib/config.js';
 import { EntropyController } from '../lib/controller.js';
-import { jsonEquivalent, matchesReference, readTarGz, scanShippedReferences } from '../tools/verify-release.mjs';
+import { jsonEquivalent, matchesReference, readTarGz, sameTextModuloLineEndings, scanShippedReferences, treeHeadOf } from '../tools/verify-release.mjs';
 
 /** The repository root, for driving the shipped tools in a subprocess. */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1320,6 +1320,18 @@ describe('release verification', () => {
     const result = spawnSync(process.execPath, [tool, '--wait', '-5'], { encoding: 'utf8' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /--wait wants a non-negative number/);
+  });
+
+  it('compares text modulo line endings, so a Windows checkout cannot fake a DIFF (defect 20)', () => {
+    assert.equal(sameTextModuloLineEndings('a\nb\n', 'a\r\nb\r\n'), true, 'CRLF checkout vs LF artifact');
+    assert.equal(sameTextModuloLineEndings('a\nb\n', 'a\nc\n'), false, 'a real difference still differs');
+    assert.equal(sameTextModuloLineEndings('a\r\nb\r\n', 'a\nc\r\n'), false);
+  });
+
+  it('names the tree HEAD it compared against (defect 20)', () => {
+    const expected = spawnSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).stdout.trim();
+    assert.equal(treeHeadOf(REPO_ROOT), expected, 'the output names the tree being compared');
+    assert.equal(treeHeadOf(join(tmpdir(), 'definitely-not-a-repo')), null, 'outside a checkout it says so');
   });
 
   it('verify-chain never writes to the chain it audits (defect 16)', () => {
