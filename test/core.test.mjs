@@ -36,7 +36,7 @@ import {
 } from '../lib/core.js';
 import { classify, resolveConfig } from '../lib/config.js';
 import { EntropyController } from '../lib/controller.js';
-import { jsonEquivalent, matchesReference, readTarGz, sameTextModuloLineEndings, scanShippedReferences, treeHeadOf } from '../tools/verify-release.mjs';
+import { jsonEquivalent, looksLikeText, matchesReference, readTarGz, sameTextModuloLineEndings, scanShippedReferences, treeHeadOf } from '../tools/verify-release.mjs';
 
 /** The repository root, for driving the shipped tools in a subprocess. */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1326,6 +1326,10 @@ describe('release verification', () => {
     assert.equal(sameTextModuloLineEndings('a\nb\n', 'a\r\nb\r\n'), true, 'CRLF checkout vs LF artifact');
     assert.equal(sameTextModuloLineEndings('a\nb\n', 'a\nc\n'), false, 'a real difference still differs');
     assert.equal(sameTextModuloLineEndings('a\r\nb\r\n', 'a\nc\r\n'), false);
+    // Text-ness is sniffed from bytes, not the name: LICENSE has no extension,
+    // and a binary never enters the comparison.
+    assert.equal(looksLikeText(Buffer.from('MIT License\n\nCopyright\n', 'utf8')), true);
+    assert.equal(looksLikeText(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d])), false, 'a PNG header is not text');
   });
 
   it('names the tree HEAD it compared against (defect 20)', () => {

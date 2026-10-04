@@ -50,7 +50,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
@@ -60,8 +60,27 @@ const ROOT = dirname(HERE);
 /** Directories that are never part of an artifact. */
 const SKIP_DIRS = new Set(['.git', 'node_modules']);
 
-/** Extensions whose bytes a checkout may legitimately rewrite (core.autocrlf). */
-const TEXT_EXTENSIONS = new Set(['.js', '.mjs', '.json', '.md', '.yml', '.yaml', '.txt', '.svg']);
+/**
+ * Could these bytes be a text file? No NUL and valid UTF-8. This — not the
+ * file name — decides the line-ending equivalence class: `LICENSE` has no
+ * extension, and an `.svg` is text, while a `.png` in the tree never wants the
+ * comparison at all.
+ */
+const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
+
+/**
+ * @param buffer - raw file bytes.
+ * @returns whether the bytes are text for comparison purposes.
+ */
+export function looksLikeText(buffer) {
+  if (buffer.includes(0)) return false;
+  try {
+    TEXT_DECODER.decode(buffer);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const sha256 = (buffer) => createHash('sha256').update(buffer).digest('hex');
 const sha1 = (buffer) => createHash('sha1').update(buffer).digest('hex');
@@ -217,8 +236,11 @@ function compareArtifact(artifact, tree) {
     }
     // A checkout may legitimately hold CRLF where the artifact holds LF: text
     // files compare modulo line endings, and the report says so (defect 20).
-    if (TEXT_EXTENSIONS.has(extname(path))
-      && sameTextModuloLineEndings(readFileSync(join(ROOT, path), 'utf8'), bytes.toString('utf8'))) {
+    // Text-ness is sniffed from the bytes, not the name, so `LICENSE` (no
+    // extension) is covered and a `.png` never enters the comparison.
+    const localBytes = readFileSync(join(ROOT, path));
+    if (looksLikeText(localBytes) && looksLikeText(bytes)
+      && sameTextModuloLineEndings(localBytes.toString('utf8'), bytes.toString('utf8'))) {
       rows.push({ path, verdict: 'match (line endings normalized by the checkout)' });
       continue;
     }
