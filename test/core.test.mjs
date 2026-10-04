@@ -244,6 +244,38 @@ describe('audit chain', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('terminates a crash-torn tail line before appending (defect 19)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entropy-torn-'));
+    const path = join(dir, 'chain.jsonl');
+    try {
+      const audit = new AuditLog(path);
+      audit.record('a', {});
+      // A crash mid-write leaves a tail line with no trailing newline.
+      writeFileSync(path, `${readFileSync(path, 'utf8')}{"ts":1,"kind":"gate_dec`, 'utf8');
+      audit.record('b', {});
+      // Pre-fix the append fused into the torn line: the entry was lost and the
+      // line count did not grow — a `seal()` on such a chain "succeeded" while
+      // writing nothing parseable (the test side's M4).
+      const lines = readFileSync(path, 'utf8').split('\n').filter((line) => line.trim().length > 0);
+      assert.equal(lines.length, 3, 'torn line terminated, new entry on its own line');
+      const last = JSON.parse(lines[2]);
+      assert.equal(last.kind, 'b');
+      assert.equal(last.seq, 1, 'the torn line is skipped, the chain continues from the last good entry');
+      const reading = new AuditLog(path).verify();
+      assert.equal(reading.status, 'verified');
+      assert.equal(reading.chained, 2);
+      assert.equal(reading.corrupt, 1, 'the torn line is reported, not silently absorbed');
+      // M4's exact shape: sealing a torn-tail chain writes a parseable entry.
+      const before = audit.seal('after a torn tail');
+      assert.equal(before.corrupt, 1);
+      const afterSeal = readFileSync(path, 'utf8').split('\n').filter((line) => line.trim().length > 0);
+      assert.equal(afterSeal.length, 4);
+      assert.equal(JSON.parse(afterSeal[3]).kind, 'chain_seal');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('control cycle', () => {
