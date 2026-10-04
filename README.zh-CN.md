@@ -425,6 +425,9 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
   发布校验会核对内嵌副本与钉版一致。一处预期内措辞变化：交错原因现在说「two generations
   wrote this chain」（共享包不预设插件）。`tools/verify-release.mjs` 随本版升到最新代
   （根 packument 检查、bundleDependencies 感知、代码引用扫描跳过 `node_modules/`）。
+  **打包注意**：`bundleDependencies` 需要 **npm** 来打包——pnpm 在默认的 isolated linker 下
+  会拒绝内嵌依赖（`ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`）；用 pnpm 复算打包的用户
+  需加 `nodeLinker: hoisted`。
 
 ## 十三、缺陷账（v0.1 → v0.3.3）
 
