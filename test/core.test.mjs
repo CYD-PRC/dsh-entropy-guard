@@ -749,7 +749,7 @@ describe('chain integrity and reading discipline', () => {
     const reading = audit.verify();
     assert.equal(reading.ok, false);
     assert.equal(reading.brokenAt, 0);
-    assert.match(reading.reason, /modified/);
+    assert.match(reading.reason, /does not hash to its recorded value/, 'the shared contract wording (0.3.4)');
   });
 
   it('detects a dropped entry', () => {
