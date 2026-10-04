@@ -17,11 +17,14 @@
  *
  * Usage:
  *   node tools/verify-release.mjs                    # published name@version vs this tree
- *   node tools/verify-release.mjs --spec pkg@1.2.3   # a different artifact
+ *   node tools/verify-release.mjs --spec pkg@1.2.3   # a different version of *this* package
  *   node tools/verify-release.mjs --pack             # pre-publish: pack this tree and check it
  *   node tools/verify-release.mjs --run-tests        # also run the suite inside the artifact
  *   node tools/verify-release.mjs --packer "<cmd>"   # packer command to use with --pack
  *                                                    # (the tool appends `pack`)
+ *   node tools/verify-release.mjs --wait <seconds>   # poll the registry until a fresh
+ *                                                    # publish settles (packument and
+ *                                                    # tarball propagate independently)
  *   node tools/verify-release.mjs --json
  *
  * Exit code 0 = verified, 1 = discrepancies (or a usage/network failure).
@@ -33,6 +36,15 @@
  *    the published `package.json` is the tree's minus the packer's trailing
  *    newline. A checker that cried wolf on that would be ignored, and an ignored
  *    checker is worse than none. The difference is still reported, never hidden.
+ *
+ * And two guardrails learned the same way (0.3.2):
+ *  - The tree anchor is this file's own location, so running *this* copy against
+ *    *another* package compares the wrong trees and reports every file as
+ *    different (defect 17). A `--spec` naming a different package is refused.
+ *  - Metadata references are not the only ring: shipped code that reads a file
+ *    the artifact does not carry fails for every installer (the sibling guard's
+ *    `verify-invariants.mjs` shipped that way). The artifact's `.js`/`.mjs` are
+ *    scanned for file literals that resolve nowhere in the artifact.
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -202,27 +214,104 @@ function checkReferences(manifestText, artifact) {
   return { checked, missing, promisedButAbsent };
 }
 
-async function fetchArtifact(spec) {
+/** File-looking string literals in a source text. */
+const CODE_REFERENCE = /['"]([A-Za-z0-9._-]+\.(?:md|json|ya?ml|txt|js|mjs))['"]/g;
+
+/**
+ * Does the artifact carry everything its shipped *code* reads?
+ *
+ * `checkReferences` covers the paths `package.json` points at; this covers the
+ * next ring out — a shipped tool that does `readFileSync(join(root, 'X'))` for
+ * an `X` the artifact does not carry fails for every user who installs the
+ * package. Found on the sibling guard: its shipped invariant harness read
+ * `DESIGN-v1.md` and the external negative anchor, neither of which shipped.
+ *
+ * A basename match counts as carried: a `join(dir, name)` literal and a nested
+ * copy both satisfy it. That makes this a heuristic whose only job is to flag
+ * references that resolve *nowhere* in the artifact. Two scoping decisions keep
+ * it quiet enough to be trusted:
+ *
+ *  - `test/` is not scanned: fixture names in tests are data, not reads
+ *    (a `file_path` fixture value never opens the file it names), and a test
+ *    that reads an unshipped fixture already fails the `--run-tests` ring.
+ *  - a literal without an extension never matches, so prose examples survive.
+ *
+ * @param artifact - the readTarGz map of artifact-relative path to bytes.
+ * @returns `{ scanned, unresolved: [{file, reference}] }`.
+ */
+export function scanShippedReferences(artifact) {
+  const paths = [...artifact.keys()];
+  const basenames = new Set(paths.map((path) => path.split('/').at(-1)));
+  const unresolved = [];
+  let scanned = 0;
+  for (const [path, bytes] of artifact) {
+    if (!/\.(?:js|mjs)$/.test(path)) continue;
+    if (path.startsWith('test/')) continue;
+    scanned += 1;
+    const text = bytes.toString('utf8');
+    for (const match of text.matchAll(CODE_REFERENCE)) {
+      const reference = match[1];
+      if (basenames.has(reference)) continue;
+      unresolved.push({ file: path, reference });
+    }
+  }
+  return { scanned, unresolved };
+}
+
+/** The package name part of a spec like `@scope/pkg@1.2.3` (or `pkg`). */
+function nameOfSpec(spec) {
   const slash = spec.startsWith('@') ? spec.indexOf('/') : -1;
   const at = spec.lastIndexOf('@');
-  const name = at > slash ? spec.slice(0, at) : spec;
+  return at > slash ? spec.slice(0, at) : spec;
+}
+
+async function fetchArtifact(spec, waitSeconds = 0) {
+  const name = nameOfSpec(spec);
+  const slash = spec.startsWith('@') ? spec.indexOf('/') : -1;
+  const at = spec.lastIndexOf('@');
   const version = at > slash ? spec.slice(at + 1) : 'latest';
   const base = `https://registry.npmjs.org/${name.replace('/', '%2F')}`;
-  const meta = await (await fetch(`${base}/${version}`)).json();
-  if (meta?.dist?.tarball === undefined) {
-    // The usual cause is the one this tool exists for: the working copy is ahead
-    // of the registry, because the version in package.json is not published yet.
-    const packument = await (await fetch(base)).json().catch(() => null);
-    const published = packument?.versions === undefined ? '(unknown)' : Object.keys(packument.versions).join(', ');
-    throw new Error(
-      `${name}@${version} is not in the registry (published: ${published}). `
-      + 'If this is a pre-release checkout that is expected: use --pack to verify the local tarball, '
-      + 'or --spec to verify an artifact that is already published.',
-    );
+  const deadline = Date.now() + waitSeconds * 1000;
+  const sleep = (ms) => new Promise((resolveSleep) => { setTimeout(resolveSleep, ms); });
+  // Registry reads settle eventually: the packument and the tarball propagate
+  // independently, and this project has been bitten in *both* orders (a tarball
+  // already 200 while the packument still 404s, and the reverse). Neither is an
+  // immediate verdict — with --wait, poll until the deadline.
+  for (;;) {
+    let lastProblem;
+    try {
+      const metaResponse = await fetch(`${base}/${version}`);
+      const meta = metaResponse.ok ? await metaResponse.json() : null;
+      const tarball = meta?.dist?.tarball;
+      if (tarball === undefined) {
+        lastProblem = `${name}@${version} is not in the registry yet`;
+      } else {
+        const response = await fetch(tarball);
+        if (response.ok) {
+          const bytes = Buffer.from(await response.arrayBuffer());
+          const integrityOk = meta.dist.shasum ? sha1(bytes) === meta.dist.shasum : null;
+          return { name, version: meta.version, bytes, meta, integrityOk };
+        }
+        lastProblem = `the tarball is not fetchable yet (HTTP ${response.status})`;
+      }
+    } catch (error) {
+      lastProblem = `registry read failed (${error?.message ?? error})`;
+    }
+    if (Date.now() >= deadline) {
+      // The usual cause is the one this tool exists for: the working copy is
+      // ahead of the registry, because the version in package.json is not
+      // published yet.
+      const packument = await fetch(base).then((r) => r.json()).catch(() => null);
+      const published = packument?.versions === undefined ? '(unknown)' : Object.keys(packument.versions).join(', ');
+      throw new Error(
+        `${name}@${version} could not be fetched (${lastProblem}; published: ${published}). `
+        + 'If this is a pre-release checkout that is expected: use --pack to verify the local tarball, '
+        + '--wait <seconds> to let a fresh publish settle, '
+        + 'or --spec to verify an artifact that is already published.',
+      );
+    }
+    await sleep(2000);
   }
-  const bytes = Buffer.from(await (await fetch(meta.dist.tarball)).arrayBuffer());
-  const integrityOk = meta.dist.shasum ? sha1(bytes) === meta.dist.shasum : null;
-  return { name, version: meta.version, bytes, meta, integrityOk };
 }
 
 function packTree(packer) {
@@ -280,16 +369,23 @@ function runTestsInside(artifact) {
 }
 
 function main(argv) {
-  const options = { spec: null, pack: false, runTests: false, json: false, packer: null };
+  const options = { spec: null, pack: false, runTests: false, json: false, packer: null, wait: 0 };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--spec') options.spec = argv[++index];
     else if (arg === '--packer') options.packer = argv[++index];
-    else if (arg === '--pack') options.pack = true;
+    else if (arg === '--wait') {
+      const seconds = Number(argv[++index]);
+      if (!Number.isFinite(seconds) || seconds < 0) {
+        process.stderr.write(`--wait wants a non-negative number of seconds, got: ${argv[index]}\n`);
+        return 1;
+      }
+      options.wait = seconds;
+    } else if (arg === '--pack') options.pack = true;
     else if (arg === '--run-tests') options.runTests = true;
     else if (arg === '--json') options.json = true;
     else if (arg === '--help' || arg === '-h') {
-      process.stdout.write('usage: verify-release.mjs [--spec name@version] [--pack] [--run-tests] [--packer cmd] [--json]\n');
+      process.stdout.write('usage: verify-release.mjs [--spec name@version] [--pack] [--run-tests] [--packer cmd] [--wait seconds] [--json]\n');
       return 0;
     } else {
       process.stderr.write(`unknown argument: ${arg}\n`);
@@ -300,6 +396,16 @@ function main(argv) {
   const manifestText = readFileSync(join(ROOT, 'package.json'), 'utf8');
   const manifest = JSON.parse(manifestText);
   const spec = options.spec ?? `${manifest.name}@${manifest.version}`;
+  // The tree anchor is this file's own location. Running this copy against a
+  // *different* package compares the wrong trees and reports every file as a
+  // difference (defect 17): refuse the mismatch rather than print 14 false DIFFs.
+  if (nameOfSpec(spec) !== manifest.name) {
+    process.stderr.write(
+      `verify-release: --spec names "${nameOfSpec(spec)}" but this copy ships with "${manifest.name}". `
+      + 'The tree anchor is the tool\'s own location — run the copy inside the package you are verifying.\n',
+    );
+    return 1;
+  }
 
   Promise.resolve()
     .then(async () => {
@@ -313,7 +419,7 @@ function main(argv) {
         bytes = packed.bytes;
         source = `packed locally with ${packed.packer}`;
       } else {
-        const fetched = await fetchArtifact(spec);
+        const fetched = await fetchArtifact(spec, options.wait);
         bytes = fetched.bytes;
         source = `registry ${fetched.name}@${fetched.version}`;
         if (fetched.integrityOk === false) {
@@ -331,13 +437,15 @@ function main(argv) {
         innerManifest === undefined ? manifestText : innerManifest.toString('utf8'),
         artifact,
       );
+      // The next ring out: shipped code reading files the artifact does not carry.
+      const codeReferences = scanShippedReferences(artifact);
       const localOnly = [...tree.keys()].filter((path) => !artifact.has(path)).sort();
       let tests = null;
       if (options.runTests) tests = runTestsInside(artifact);
 
       if (options.json) {
         process.stdout.write(`${JSON.stringify({
-          source, spec, files: artifact.size, comparison, references, localOnly, tests,
+          source, spec, files: artifact.size, comparison, references, codeReferences, localOnly, tests,
         }, null, 2)}\n`);
       } else {
         process.stdout.write(`verify-release: ${source} (${artifact.size} files)\n`);
@@ -352,6 +460,10 @@ function main(argv) {
         if (references.promisedButAbsent.length > 0) {
           process.stdout.write(`  promised by files but absent: ${references.promisedButAbsent.join(', ')}\n`);
         }
+        process.stdout.write(`  code references scanned: ${codeReferences.scanned}  unresolved: ${codeReferences.unresolved.length}\n`);
+        for (const entry of codeReferences.unresolved) {
+          process.stdout.write(`    UNRESOLVED ${entry.file} -> ${entry.reference}\n`);
+        }
         process.stdout.write(`  in the tree but not in the artifact: ${localOnly.length === 0 ? '(none)' : localOnly.join(', ')}\n`);
         if (tests !== null) {
           process.stdout.write(`  suite inside the artifact: ${tests.ran ? `ran ${tests.testFile}, exit ${tests.status}` : tests.reason}\n`);
@@ -360,6 +472,7 @@ function main(argv) {
       const failed = comparison.mismatches > 0
         || references.missing > 0
         || references.promisedButAbsent.length > 0
+        || codeReferences.unresolved.length > 0
         || (tests !== null && tests.ran && tests.status !== 0);
       return failed ? 1 : 0;
     })

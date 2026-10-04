@@ -13,9 +13,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { gzipSync } from 'node:zlib';
 
@@ -33,7 +36,10 @@ import {
 } from '../lib/core.js';
 import { classify, resolveConfig } from '../lib/config.js';
 import { EntropyController } from '../lib/controller.js';
-import { jsonEquivalent, matchesReference, readTarGz } from '../tools/verify-release.mjs';
+import { jsonEquivalent, matchesReference, readTarGz, scanShippedReferences } from '../tools/verify-release.mjs';
+
+/** The repository root, for driving the shipped tools in a subprocess. */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** A utility that always denies, for exercising the rejection path. */
 const alwaysDeny = () => 0;
@@ -211,6 +217,61 @@ describe('audit chain', () => {
       const lines = readFileSync(path, 'utf8').trim().split('\n');
       assert.equal(lines.length, 2);
       assert.equal(JSON.parse(lines[0]).kind, 'init');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('serialises two writers on one chain file: no duplicate seqs (defect 14)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entropy-lock-'));
+    const path = join(dir, 'chain.jsonl');
+    try {
+      const first = new AuditLog(path);
+      const second = new AuditLog(path);
+      first.record('a', {});
+      second.record('b', {});
+      first.record('c', {});
+      // The pre-0.3.2 writer cached the tail once per instance, so the third
+      // append resumed from a stale tail and wrote a duplicate seq 1.
+      const seqs = readFileSync(path, 'utf8').trim().split('\n')
+        .map((line) => JSON.parse(line).seq);
+      assert.deepEqual(seqs, [0, 1, 2]);
+      const reading = new AuditLog(path).verify();
+      assert.equal(reading.status, 'verified');
+      assert.equal(reading.chained, 3);
+      assert.equal(reading.forks, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('terminates a crash-torn tail line before appending (defect 19)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entropy-torn-'));
+    const path = join(dir, 'chain.jsonl');
+    try {
+      const audit = new AuditLog(path);
+      audit.record('a', {});
+      // A crash mid-write leaves a tail line with no trailing newline.
+      writeFileSync(path, `${readFileSync(path, 'utf8')}{"ts":1,"kind":"gate_dec`, 'utf8');
+      audit.record('b', {});
+      // Pre-fix the append fused into the torn line: the entry was lost and the
+      // line count did not grow — a `seal()` on such a chain "succeeded" while
+      // writing nothing parseable (the test side's M4).
+      const lines = readFileSync(path, 'utf8').split('\n').filter((line) => line.trim().length > 0);
+      assert.equal(lines.length, 3, 'torn line terminated, new entry on its own line');
+      const last = JSON.parse(lines[2]);
+      assert.equal(last.kind, 'b');
+      assert.equal(last.seq, 1, 'the torn line is skipped, the chain continues from the last good entry');
+      const reading = new AuditLog(path).verify();
+      assert.equal(reading.status, 'verified');
+      assert.equal(reading.chained, 2);
+      assert.equal(reading.corrupt, 1, 'the torn line is reported, not silently absorbed');
+      // M4's exact shape: sealing a torn-tail chain writes a parseable entry.
+      const before = audit.seal('after a torn tail');
+      assert.equal(before.corrupt, 1);
+      const afterSeal = readFileSync(path, 'utf8').split('\n').filter((line) => line.trim().length > 0);
+      assert.equal(afterSeal.length, 4);
+      assert.equal(JSON.parse(afterSeal[3]).kind, 'chain_seal');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -698,7 +759,9 @@ describe('chain integrity and reading discipline', () => {
     audit._buffer.splice(1, 1);
     const reading = audit.verify();
     assert.equal(reading.ok, false);
-    assert.match(reading.reason, /seq jumped/);
+    // 0.3.2 (defect 15): a deletion is now caught twice — the surviving
+    // successor's `prev` dangles (reported first), and the sequence carries a gap.
+    assert.match(reading.reason, /names a hash no entry carries/);
   });
 
   it('grades a mixed-generation chain as a discontinuity, not a tamper', () => {
@@ -788,11 +851,86 @@ describe('chain integrity and reading discipline', () => {
     audit.record('a', {});
     audit.seal('');
     audit.record('b', {});
-    audit._buffer.push({ ...audit._buffer[0] });
+    // Fork the *post-seal* entry: its seq is above the seal boundary, so the
+    // fork is live history and still grades. (0.3.2, contract §3: fork
+    // membership is decided by seq against the seal, not by file position.)
+    audit._buffer.push({ ...audit._buffer[2] });
     const reading = audit.verify();
     assert.equal(reading.status, 'forked');
     assert.equal(reading.liveForks, 1);
     assert.equal(reading.clean, false);
+  });
+
+  it('keeps a sealed seq sealed even when the branch entry is written after the seal (contract §3)', () => {
+    const audit = new AuditLog();
+    audit.record('a', {});
+    audit.record('b', {});
+    audit._buffer.push({ ...audit._buffer[1] });
+    audit.seal('acknowledged the fork');
+    // A stale writer wakes up *after* the seal and appends another copy of the
+    // seq the seal already covers: acknowledged history, not a new finding.
+    audit._buffer.push({ ...audit._buffer[1] });
+    const reading = audit.verify();
+    assert.equal(reading.status, 'verified');
+    assert.equal(reading.forks, 2, 'history is still counted, not dropped');
+    assert.equal(reading.liveForks, 0);
+  });
+
+  it('counts every fork instead of stopping at the first (defect 15)', () => {
+    const audit = new AuditLog();
+    audit.record('a', {});
+    audit.record('b', {});
+    audit.record('c', {});
+    audit._buffer.push({ ...audit._buffer[1] });
+    audit._buffer.push({ ...audit._buffer[2] });
+    const reading = audit.verify();
+    assert.equal(reading.status, 'forked');
+    assert.equal(reading.forks, 2, 'the pre-0.3.2 walk stopped the count at the first fork');
+    assert.equal(reading.liveForks, 2);
+  });
+
+  it('keeps checking links after a fork: a deleted branch entry is a rewrite (defect 15)', () => {
+    // A branch entry, hand-built with a self-consistent hash (the same payload
+    // shape `record()` writes), so the content check passes and only the link
+    // can speak.
+    const branch = (seq, prev, fields = {}) => {
+      const base = { ts: 1, seq, ...fields, kind: 'gate_decision', prev };
+      const hash = createHash('sha256').update(JSON.stringify(base)).digest('hex');
+      return { ...base, hash };
+    };
+    const audit = new AuditLog();
+    const a0 = branch(0, null);
+    const a1 = branch(1, a0.hash);
+    const b1 = branch(1, a0.hash, { tool: 'writer-2' });
+    const b2 = branch(2, b1.hash, { tool: 'writer-2' });
+    audit._buffer.push(a0, a1, b1, b2);
+    assert.equal(audit.verify().status, 'forked', 'control: the branch itself is a fork, not a rewrite');
+
+    // The adversary deletes the branch entry b2 links to. The pre-0.3.2 walk
+    // had abandoned link checking at the fork, so this read as verified.
+    audit._buffer.splice(2, 1);
+    const reading = audit.verify();
+    assert.equal(reading.status, 'tampered');
+    assert.match(reading.reason, /names a hash no entry carries/);
+  });
+
+  it('reports a sequence gap inside sealed history without grading it', () => {
+    const branch = (seq, prev) => {
+      const base = { ts: 1, seq, kind: 'gate_decision', prev };
+      const hash = createHash('sha256').update(JSON.stringify(base)).digest('hex');
+      return { ...base, hash };
+    };
+    const audit = new AuditLog();
+    const a0 = branch(0, null);
+    const a1 = branch(1, a0.hash);
+    const a5 = branch(5, a1.hash);
+    audit._buffer.push(a0, a1, a5);
+    assert.equal(audit.verify().status, 'tampered', 'control: a live gap is a missing entry');
+    assert.match(audit.verify().reason, /seq jumped from 1 to 5/);
+    audit.seal('the gap is acknowledged history');
+    const reading = audit.verify();
+    assert.equal(reading.status, 'verified', 'the seal covers the seq the gap resumes at');
+    assert.equal(reading.discontinuities, 1, 'the gap is still reported');
   });
 
   it('keeps an unchained legacy prefix visible instead of trusted', () => {
@@ -950,6 +1088,21 @@ describe('harness controller', () => {
     c.guard({ name: 'pwsh', arguments: { command: 'rm -rf /' }, callId: 'a' });
     c.guard({ name: 'pwsh', arguments: { command: 'rm -rf /' }, callId: 'b' });
     assert.equal(c.guard({ name: 'entropy_status', arguments: {}, callId: 'c' }), undefined);
+  });
+
+  it('never gates the sibling guards’ observers either (cross-plugin convention)', () => {
+    // Unknown tools attest to G3 via `defaultTool`, so before 0.3.2 a demoted
+    // session lost the *diagnostic* readings of the other guards on the same
+    // chain at exactly the moment it needed them.
+    const c = controller();
+    c.guard({ name: 'pwsh', arguments: { command: 'rm -rf /' }, callId: 'a' });
+    c.guard({ name: 'pwsh', arguments: { command: 'rm -rf /' }, callId: 'b' });
+    assert.equal(c.guard({ name: 'shape_status', arguments: {}, callId: 'c' }), undefined);
+    assert.equal(c.guard({ name: 'threat_status', arguments: {}, callId: 'd' }), undefined);
+    const config = resolveConfig({});
+    assert.equal(classify('shape_status', {}, config).gear, Gear.OBSERVE);
+    assert.equal(classify('threat_status', {}, config).gear, Gear.OBSERVE);
+    assert.equal(classify('shape_status', {}, config).known, true);
   });
 
   it('bounds untracked pending calls and sweeps abandoned ones', () => {
@@ -1135,5 +1288,58 @@ describe('release verification', () => {
     assert.deepEqual([...artifact.keys()].sort(), ['index.js', 'lib/x.js', 'locale/en.json']);
     assert.equal(artifact.get('index.js').toString('utf8'), 'export const a = 1;\n');
     assert.equal(artifact.get('lib/x.js').toString('utf8'), 'x');
+  });
+
+  it('scans shipped code for references the artifact does not carry (defect 18)', () => {
+    const artifact = readTarGz(buildTarGz({
+      'package/lib/tool.mjs': 'const x = readFileSync(join(root, \'DESIGN-v1.md\'));\n',
+      'package/index.js': 'export {};\n',
+    }));
+    const reading = scanShippedReferences(artifact);
+    assert.equal(reading.scanned, 2);
+    assert.deepEqual(reading.unresolved, [{ file: 'lib/tool.mjs', reference: 'DESIGN-v1.md' }]);
+    // A carried basename resolves, and a shipped test fixture name is not a read.
+    const carried = readTarGz(buildTarGz({
+      'package/lib/tool.mjs': 'const x = readFileSync(join(root, \'DESIGN-v1.md\'));\n',
+      'package/DESIGN-v1.md': '# ok\n',
+      'package/test/core.test.mjs': 'classify(\'write\', { file_path: \'a.md\' });\n',
+    }));
+    assert.equal(scanShippedReferences(carried).unresolved.length, 0);
+  });
+
+  it('verify-release refuses to verify a different package with this copy (defect 17)', () => {
+    const tool = join(REPO_ROOT, 'tools', 'verify-release.mjs');
+    const result = spawnSync(process.execPath, [tool, '--spec', '@cyd-prc/dsh-shape-guard@0.1.5'], { encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /names "@cyd-prc\/dsh-shape-guard" but this copy ships with/);
+  });
+
+  it('verify-release validates --wait as a non-negative number of seconds', () => {
+    const tool = join(REPO_ROOT, 'tools', 'verify-release.mjs');
+    const result = spawnSync(process.execPath, [tool, '--wait', '-5'], { encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--wait wants a non-negative number/);
+  });
+
+  it('verify-chain never writes to the chain it audits (defect 16)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entropy-verifychain-'));
+    const path = join(dir, 'chain.jsonl');
+    try {
+      const audit = new AuditLog(path);
+      audit.record('gate_decision', { admitted: true, tool: 'read' });
+      audit.record('gate_decision', { admitted: false, tool: 'write' });
+      const digest = () => createHash('sha256').update(readFileSync(path)).digest('hex');
+      const before = digest();
+      const tool = join(REPO_ROOT, 'tools', 'verify-chain.mjs');
+      for (let run = 0; run < 2; run += 1) {
+        const result = spawnSync(process.execPath, [tool, path], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /VERIFIED/);
+        assert.match(result.stdout, /# Entropy guard report/, 'the report is still generated');
+      }
+      assert.equal(digest(), before, 'the audited chain is byte-identical after two runs');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

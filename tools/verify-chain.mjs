@@ -7,6 +7,12 @@
  * readings from the raw entries, and prints the same report `/entropy export`
  * writes. `--demo` proves the tamper detection on a throwaway copy.
  *
+ * The instrument is read-only against its target (0.3.2, defect 16): the report
+ * needs a controller, and constructing one writes `init`/`restore` entries — so
+ * the controller is built over a scratch copy in a temporary directory, and the
+ * audited file's bytes are exactly the same after the run as before it. The
+ * pre-fix version appended two entries to the chain it audited on every run.
+ *
  * Usage:
  *   node tools/verify-chain.mjs <chain.jsonl>          # verify + markdown report
  *   node tools/verify-chain.mjs <chain.jsonl> --json   # full JSON report
@@ -80,12 +86,27 @@ if (target === '--demo') {
     rmSync(dir, { recursive: true, force: true });
   }
 } else if (target !== undefined) {
-  const controller = controllerFor(target);
   printReading(`chain ${target}`, new AuditLog(target).verify());
   console.log('');
-  console.log(flag === '--json'
-    ? JSON.stringify(controller.exportReport(), null, 2)
-    : controller.exportMarkdown());
+  // The report path constructs a controller, and a controller's constructor
+  // appends `init` + `restore` to whatever chain it is bound to. Bind it to a
+  // scratch copy: the instrument must not be a participant in the chain it
+  // audits (defect 16).
+  const dir = mkdtempSync(join(tmpdir(), 'entropy-verify-'));
+  try {
+    const scratch = join(dir, 'chain.jsonl');
+    try {
+      copyFileSync(target, scratch);
+    } catch {
+      writeFileSync(scratch, '', 'utf8'); // a missing chain reports as empty
+    }
+    const controller = controllerFor(scratch);
+    console.log(flag === '--json'
+      ? JSON.stringify(controller.exportReport(), null, 2)
+      : controller.exportMarkdown());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 } else {
   console.error('usage: node tools/verify-chain.mjs <chain.jsonl> [--json] | --demo');
   process.exit(2);
