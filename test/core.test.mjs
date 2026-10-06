@@ -36,6 +36,7 @@ import {
 } from '../lib/core.js';
 import { classify, resolveConfig } from '../lib/config.js';
 import { EntropyController } from '../lib/controller.js';
+import { apply } from '../index.js';
 import { jsonEquivalent, looksLikeText, matchesReference, readTarGz, sameTextModuloLineEndings, scanShippedReferences, treeHeadOf } from '../tools/verify-release.mjs';
 
 /** The repository root, for driving the shipped tools in a subprocess. */
@@ -1361,5 +1362,89 @@ describe('release verification', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('fleet view (D-2)', () => {
+  /**
+   * A minimal Host stub: run `apply()` for real, capture the registrations it
+   * makes (route handler, commands, guard), and let the test drive them.
+   */
+  function stubHost(rawConfig = {}) {
+    const routes = [];
+    const commands = [];
+    const guards = [];
+    const ctx = {
+      on() { return () => {}; },
+      tools: {
+        guard(fn) { guards.push(fn); return () => {}; },
+        register() { return () => {}; },
+      },
+      effect(generator) {
+        const iterator = generator();
+        let step = iterator.next();
+        while (!step.done) step = iterator.next();
+      },
+      inject(_deps, fn) {
+        fn({
+          commands: { register(command) { commands.push(command); } },
+          webServer: { register(route) { routes.push(route); } },
+          systemPrompt: { getContextOrder: () => undefined, context: () => {} },
+        });
+      },
+      logger: { info() {} },
+    };
+    apply(ctx, { audit: { dir: '' }, ...rawConfig });
+    return { routes, commands, guards };
+  }
+
+  it('the synthetic process scope never sets the fleet’s headline reading (D-2)', () => {
+    // The production shape, measured by the interim verifier: a real session at
+    // G4 with 274 decisions while the fleet read G0 — the ghost's gear — because
+    // `weakestGear` took the minimum over a set that included `(process)`.
+    const host = stubHost();
+
+    // The ghost: agentless calls, all denied, driven to G0 suspension — the
+    // shape a stale process.jsonl folds into every activation.
+    for (let i = 0; i < 8; i += 1) {
+      host.guards[0]({ name: 'pwsh', arguments: { command: 'rm -rf /' }, callId: `g${i}`, agent: undefined });
+    }
+    // A real session doing ordinary read-only work at its starting gear.
+    assert.equal(host.guards[0]({ name: 'read', arguments: {}, callId: 'r1', agent: { id: 'session-real' } }), undefined);
+
+    const route = host.routes.find((r) => r.path === '/entropy/state');
+    let body = null;
+    route.handler({ method: 'GET', url: '/entropy/state' }, {
+      writeHead() {},
+      end(payload) { body = JSON.parse(payload); },
+    });
+
+    assert.equal(body.processScope?.gear, 0, 'the ghost is reported as diagnostics');
+    assert.equal(body.processScope?.suspended, false, 'gear denials do not advance the suspension count (countGearDenials: false)');
+    assert.equal(body.processScope?.denied, 8);
+    assert.ok(body.agents.every((agent) => agent.agentId !== null), 'the ghost is not in the agent ranking');
+    assert.equal(body.count, 1, 'one real session');
+    assert.equal(body.weakestGear, 3, 'the fleet reads the real session, not the ghost');
+    assert.equal(body.weakestGearLabel, 'G3 Execute');
+    assert.equal(body.decisions, 1, 'the ghost’s eight rejections stay out of the fleet totals');
+
+    const fleetCommand = host.commands.find((command) => command.name === 'entropy');
+    const report = fleetCommand.handler({ rawInput: 'fleet', agent: undefined });
+    assert.match(report.text, /weakest gear  G3 Execute/u);
+    assert.match(report.text, /process scope G0 Observe — diagnostic, not a session/u);
+  });
+
+  it('with no identified agents the headline is null, and the ghost stays diagnostic', () => {
+    const host = stubHost();
+    host.guards[0]({ name: 'pwsh', arguments: { command: 'rm -rf /' }, callId: 'g1', agent: undefined });
+    const route = host.routes.find((r) => r.path === '/entropy/state');
+    let body = null;
+    route.handler({ method: 'GET', url: '/entropy/state' }, {
+      writeHead() {},
+      end(payload) { body = JSON.parse(payload); },
+    });
+    assert.equal(body.count, 0);
+    assert.equal(body.weakestGear, null, 'no real sessions → no headline gear');
+    assert.equal(body.processScope?.gear >= 0, true, 'the ghost is still reported beside it');
   });
 });
