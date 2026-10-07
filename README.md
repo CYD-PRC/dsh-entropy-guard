@@ -267,7 +267,11 @@ Observed on a `danger-full-access` desktop profile with this bundle installed:
 
 - **The chain moved to `@cyd-prc/dsh-audit-chain`.** `AuditLog` is now the shared `ChainLog` plus the readers only this plugin uses (`replayState`, `gearHistogram`, `gateAcceptanceRate`); the writer, the lock, the torn-tail rule, the seal and the grader live in one place for all three guards. This closes the structural lesson of this file's defect ledger: two copies of the chain had drifted onto one file (S3 shipped in two packages; the lock took a measured fork incident to cross over). One chain, one implementation — a grading fix can never again exist in one copy and not the other. The dependency is **bundled** (`bundleDependencies`, exact pin), so the installed artifact is still self-contained and the release check verifies the bundled copy matches the pin. One expected wording change: the interleaved reason now says "two generations wrote this chain" (the shared package does not presume plugins). `tools/verify-release.mjs` rides the current generation (root-packument check, bundled-dependency awareness, code-reference scan skipping `node_modules/`). **Packaging note:** `bundleDependencies` needs `npm` for packing — pnpm refuses bundled deps under its default isolated linker (`ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`); pnpm users reproducing a pack need `nodeLinker: hoisted`.
 
-## Defect ledger (v0.1 → v0.3.3)
+## 0.3.5
+
+- **The fleet's headline no longer reads a ghost (defect 21).** The agentless process scope — created by the `controllerFor(undefined)` warm-up so calls with no owning agent are still governed — sat in the fleet set, and `weakestGear` took the minimum, so the UI's most visible reading was pinned to the ghost's gear forever. Measured on a live profile by the interim verifier: the real session sat at **G4 with 274 decisions while the fleet read G0** — the ghost's gear, folded from ancient rejections of a tool the table did not have yet. The reading was the opposite of the facts. Now the fleet aggregates **identified agents only**, and the process scope is reported beside it as diagnostics (`processScope`, plus a marked line in `/entropy fleet`). Aggregates (`decisions`, `acceptance`, `suspended`) no longer blend the ghost in. The ghost keeps governing agentless calls exactly as before — only the reporting changed.
+
+## Defect ledger (v0.1 → v0.3.5)
 
 Every entry here was found by running this plugin on a live profile; each names the fix that closed it. The pattern is the point: the defects cluster where a Python-shaped control law meets a tool registry, and three of them were the guard mis-grading *its own maintenance*.
 
@@ -293,6 +297,7 @@ Every entry here was found by running this plugin on a live profile; each names 
 | 18 | Shipped code could read files the artifact does not carry, below the metadata ring | The sibling guard shipped an invariant harness whose `DESIGN-v1.md` and external negative anchor were not in its tarball | `verify-release` scans the artifact's shipped code for file literals that resolve nowhere in it |
 | 19 | An append fused into a crash-torn tail line | The entry was lost and the line count did not grow — a `seal()` on such a chain "succeeded" while writing nothing parseable (the test side's M4) | every append terminates a torn tail first; the torn line stays as a counted `corrupt` line — reported, never silently absorbed |
 | 20 | The release checker compared raw checkout bytes against artifact bytes | On Windows (`core.autocrlf=true`, the default) every text file read as a false `DIFF` — 17 phantom mismatches on the good 0.3.2 release, nearly declared bad by the test side; the first fix still missed `LICENSE` (a file without an extension is text too) | text-ness is sniffed from bytes (NUL-free valid UTF-8), text compares modulo line endings and says so (`match (line endings normalized by the checkout)`), and the header names the tree's HEAD commit |
+| 21 | The fleet's headline reading came from a synthetic ghost | The agentless process scope (a warm-up construct so agentless calls are governed) sat in the fleet set and `weakestGear` took the minimum — a live profile read **G0 forever** while its real session sat at G4 with 274 decisions; the ghost's gear was folded from ancient rejections of a tool the table did not yet have | the fleet aggregates identified agents only; the process scope is reported beside it as diagnostics (`processScope` + a marked line in `/entropy fleet`); its governance of agentless calls is unchanged |
 
 ## Threat model boundaries (inherited from upstream)
 
@@ -314,7 +319,7 @@ Every entry here was found by running this plugin on a live profile; each names 
 ## Tests
 
 ```
-node --test test/core.test.mjs        # 87 tests, no dependencies
+node --test test/core.test.mjs        # 89 tests, no dependencies
 ```
 
 Covers the ported contract (fail-closed attestation and gate validation, the

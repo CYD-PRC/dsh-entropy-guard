@@ -161,10 +161,19 @@ export function apply(ctx, rawConfig) {
    * Every governed agent's live state, with the fleet aggregate. G4 is defined
    * as system-level coordination, so the fleet's *weakest* gear — not its
    * strongest — is the level the composition can be trusted at.
+   *
+   * D-2: the agentless process scope (created by the `controllerFor(undefined)`
+   * warm-up so calls with no owning agent are still governed) is **synthetic —
+   * it is not a session**, and its history (often ancient: early calls to a
+   * tool the table did not have yet) must not set the fleet's headline reading.
+   * The weakest gear is computed over identified agents only; the process scope
+   * is reported beside the fleet as diagnostics. Measured on a live profile:
+   * the real session sat at G4 with 274 decisions while the fleet read G0 —
+   * the ghost's gear — forever.
    * @returns the fleet view.
    */
   const fleet = () => {
-    const agents = [...controllers.values()].map((controller) => {
+    const all = [...controllers.values()].map((controller) => {
       const status = controller.status();
       return {
         agentId: status.agentId,
@@ -180,7 +189,11 @@ export function apply(ctx, rawConfig) {
         wouldDeny: status.wouldDeny,
         acceptance: status.gateAcceptanceRate,
       };
-    }).sort((a, b) => a.gear - b.gear || String(a.agentId).localeCompare(String(b.agentId)));
+    });
+    const agents = all
+      .filter((agent) => agent.agentId !== null)
+      .sort((a, b) => a.gear - b.gear || String(a.agentId).localeCompare(String(b.agentId)));
+    const processScope = all.find((agent) => agent.agentId === null) ?? null;
 
     const decisions = agents.reduce((sum, agent) => sum + agent.decisions, 0);
     const admitted = agents.reduce((sum, agent) => sum + (agent.decisions - agent.denied), 0);
@@ -196,6 +209,16 @@ export function apply(ctx, rawConfig) {
       denied: decisions - admitted,
       acceptance: decisions === 0 ? null : admitted / decisions,
       agents,
+      // Diagnostics, never the headline: the synthetic scope's own state.
+      processScope: processScope === null ? null : {
+        gear: processScope.gear,
+        gearLabel: processScope.gearLabel,
+        sigma: processScope.sigma,
+        suspended: processScope.suspended,
+        cycle: processScope.cycle,
+        decisions: processScope.decisions,
+        denied: processScope.denied,
+      },
     };
   };
 
@@ -210,9 +233,14 @@ export function apply(ctx, rawConfig) {
       `  weakest gear  ${view.weakestGearLabel ?? 'n/a'} (G0 Observe → G4 Integrate)`,
       `  suspended     ${view.suspended}`,
       `  acceptance    ${view.acceptance === null ? 'n/a' : view.acceptance.toFixed(4)} over ${view.decisions} decisions (${view.denied} denied, ${view.wouldDeny} would-deny)`,
-      '',
-      '  agent                gear  sigma  susp  cycles  decisions  denied',
     ];
+    if (view.processScope !== null) {
+      lines.push(
+        `  process scope ${view.processScope.gearLabel} — diagnostic, not a session: excluded from the fleet reading `
+        + `(${view.processScope.decisions} decisions, ${view.processScope.denied} denied)`,
+      );
+    }
+    lines.push('', '  agent                gear  sigma  susp  cycles  decisions  denied');
     for (const agent of view.agents) {
       lines.push(
         `  ${agent.label.padEnd(20)} G${agent.gear}    ${String(agent.sigma).padEnd(6)} `

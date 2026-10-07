@@ -249,7 +249,7 @@ tools:
 ## 十、测试
 
 ```
-node --test test/core.test.mjs      # 87 项，无依赖
+node --test test/core.test.mjs      # 89 项，无依赖
 ```
 
 覆盖移植契约（fail-closed 口供与门校验、慢升快降、挂起端点与 `resume()` **不**做什么、
@@ -415,6 +415,16 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
   "除此之外无事"的破行链上 `reason` 是空的。现在它说 `1 unparsable line(s) (reported, not
   graded)`——与兄弟分级器逐字一致，同一份字节在两个校验器上读出同一句话。
 
+## 0.3.5
+
+- **fleet 头条读数不再读幽灵（缺陷 21）。** 无 agent 归属的进程级作用域——`controllerFor(undefined)`
+  预热所建，让无归属调用也被治理——坐在 fleet 集合里，而 `weakestGear` 取最小值，于是 UI 最显眼的
+  读数永远钉在幽灵的档位上。代行验证方在活 profile 上实测：**真实会话 G4、274 次判定，而 fleet 读
+  G0**——那是幽灵的档位，从"工具表当年还没有 bash"时代的拒绝记录折出来的。读数与事实相反。现在
+  fleet 只聚合**有 id 的真实会话**，进程级作用域以诊断身份单列（`processScope` 字段 + `/entropy fleet`
+  里一行标注）。聚合量（decisions/acceptance/suspended）不再把幽灵拌进去。幽灵对无归属调用的治理
+  行为本身不变——变的只是报告。
+
 ## 0.3.4
 
 - **链迁到 `@cyd-prc/dsh-audit-chain`。** `AuditLog` 现在是共享的 `ChainLog` 加上只有本插件在用的
@@ -429,7 +439,7 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
   会拒绝内嵌依赖（`ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`）；用 pnpm 复算打包的用户
   需加 `nodeLinker: hoisted`。
 
-## 十三、缺陷账（v0.1 → v0.3.3）
+## 十三、缺陷账（v0.1 → v0.3.5）
 
 以下每一条都是在真实 profile 上跑出来的，并注明关闭它的修复。规律本身就是结论：
 缺陷集中在"Python 形状的控制律撞上工具注册表"的地方，其中三条是守卫**误判了自己的维护动作**。
@@ -456,6 +466,7 @@ after editing the last entry on disk: TAMPERED · entries 254 · chained 53 · u
 | 18 | 已交付代码可能读取实件并未携带的文件，低于元数据那一环 | 兄弟守卫交付的不变量检查器所读的 `DESIGN-v1.md` 与外部锚不在它的 tarball 里 | `verify-release` 扫描实件内已交付代码中的文件字面量，凡无处解析者列出 |
 | 19 | 追加融合进崩溃撕断的尾行 | 条目丢失、行数不增——对这样的链调 `seal()` "看起来成功"却没写下可解析的条目（测试侧的 M4） | 每次追加先终止破行；破行留在原地计入 `corrupt`——报出，绝不静默吞掉 |
 | 20 | 发布校验器拿检出原始字节对实件字节 | Windows 上（`core.autocrlf=true` 是默认）每个文本文件都读成假 `DIFF`——测试侧在完好的 0.3.2 上量出 17 处幻报、差点宣布好发布是坏的；第一版修复还漏了 `LICENSE`（无扩展名的文件也是文本） | 文本性按字节嗅探（无 NUL、合法 UTF-8），文本按行尾归一比较并如实报出（`match (line endings normalized by the checkout)`）；头部行点名被验树的 HEAD 提交号 |
+| 21 | fleet 头条读数来自合成幽灵 | 无 agent 归属的进程级作用域（为治理无归属调用而预热的构造）坐在 fleet 集合里，`weakestGear` 取最小值——活 profile 上**永远读 G0**，而真实会话在 G4、274 次判定；幽灵的档位是从"工具表当年还没有 bash"时代的拒绝折出来的 | fleet 只聚合有 id 的真实会话；进程级作用域以诊断身份单列（`processScope` + `/entropy fleet` 一行标注）；它对无归属调用的治理不变 |
 
 ## 十一、溯源与许可
 
